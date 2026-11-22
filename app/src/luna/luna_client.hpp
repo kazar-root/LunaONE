@@ -1,0 +1,136 @@
+// LunaNX-Origin: KazaR-RooT | urn:uuid:57e9877e-564c-4275-ae2a-a70f276bfbed | unit=74a729a71dda08a7aadc
+// Project origin: https://github.com/kazar-root/LunaNX (third-party notices remain applicable).
+
+#pragma once
+
+#include "amazon_auth.hpp"
+#include "cookie_jar.hpp"
+#include "core/http_client.hpp"
+#include "luna_models.hpp"
+
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <map>
+
+typedef struct json_t json_t;
+
+namespace lunanx::luna
+{
+
+class LunaError : public std::runtime_error
+{
+  public:
+    using std::runtime_error::runtime_error;
+};
+
+// Les cookies ont expiré ou sont absents : il faut les réexporter depuis le navigateur.
+class SignInRequired : public LunaError
+{
+  public:
+    using LunaError::LunaError;
+};
+
+class LunaClient
+{
+  public:
+    using Status = std::function<void(const std::string&)>;
+
+    explicit LunaClient(CookieJar cookies, std::optional<DeviceRegistration> registration = {});
+
+    // 1. /token (cookies → jeton d'accès)  2. getAppConfig  3. choix du profil + playerLogin.
+    void SignIn(const Status& status = {});
+    // Langue du catalogue et des sessions (en-tête x-amz-locale) : code de langue de
+    // l'interface, ou vide pour la langue de la boutique. Renvoie true si
+    // elle diffère de la langue de la boutique (pour pouvoir revenir à celle-ci en cas d'échec).
+    bool SetContentLanguage(const std::string& language);
+    bool SignedIn() const { return !account_.access_token.empty(); }
+    const Account& account() const { return account_; }
+    // Abonnement Luna du compte, connu après FetchShelves (menu du joueur).
+    AccountPlan Plan() const;
+    // Statut tel que Luna l'affiche (ex. « Luna Premium »), vide s'il est inconnu.
+    std::string PlanLabel() const;
+    PlayerProfile Profile() const;
+
+    // Rayons de la page d'accueil et des onglets de navigation.
+    std::vector<Shelf> FetchShelves() const;
+    // Historique du profil actif, chargé comme le site depuis home/library et getWidget.
+    // Les boutiques, la langue et le jeton de profil sont ceux de ce client.
+    std::vector<Shelf> FetchRecentShelves() const;
+    // Parcourt en direct les pages liées au catalogue (« Tout voir », genres, collections,
+    // chaînes…) repérées par FetchShelves, pour trouver les jeux absents des rangées de
+    // l'accueil. Les nouveaux jeux (absents de `known`, clés de InsertGameKeys) sont transmis
+    // par lots à `on_games` ; l'exploration s'arrête dès que `keep_going` renvoie false.
+    void ExploreCatalog(std::set<std::string> known,
+                        const std::function<void(std::vector<Game>)>& on_games,
+                        const std::function<bool()>& keep_going) const;
+    // Recherche Luna (même requête que la page « search » du site) : jeux trouvés par le
+    // serveur, dans l'ordre de pertinence de Luna, y compris ceux absents du catalogue local.
+    // Vide si Luna ne trouve rien ; lève LunaError si la première page est refusée.
+    std::vector<Game> SearchGames(const std::string& query,
+                                  const std::function<bool()>& keep_going = {}) const;
+    // Complète un jeu avec sa fiche (description, playToken).
+    Game FetchGameDetail(const Game& game) const;
+
+    std::vector<Region> MeasureRegions() const;
+    bool IsPinChallengeRequired() const;
+
+    std::string CreateGameSessionJob(
+        const Game& game,
+        const std::string& offer_sdp,
+        const std::vector<std::string>& requested_channels,
+        const std::vector<Region>& regions,
+        const std::string& preferred_region,
+        // The Luna VideoQuality value: LIMITED, STANDARD, STANDARD_PLUS or BEST.
+        const std::string& data_usage = "STANDARD") const;
+    SessionJob GetGameSessionJob(const std::string& job_id) const;
+    void CancelGameSessionJob(const std::string& job_id) const;
+    void TerminateGameSession(const std::string& session_id) const;
+
+    // Appel brut au proxy (POST JSON) ; lève LunaError en cas d'échec. Le résultat doit
+    // être libéré avec json_decref.
+    json_t* Call(const std::string& operation, json_t* body) const;
+
+  private:
+    std::string FetchAccessToken() const;
+    void LoadAppConfig();
+    void SelectProfile(const Status& status);
+    // Page Luna désignée soit par un contexte (pageId/pageUri), soit par le jeton de service
+    // porté par l'action d'un widget (c'est ainsi que le site web navigue).
+    // `search_context` (adopté) : contexte de recherche du site, joint à la requête.
+    json_t* GetPage(json_t* page_context, const std::string& service_token = {},
+                    json_t* search_context = nullptr) const;
+    // Charge les collections différées (getWidget) de la page ; renvoie le nombre d'appels.
+    // `search_context` (non adopté) est recopié dans chaque requête ; `keep_going` interrompt.
+    size_t ResolveLazyCollections(json_t* page, bool strict_recent = false, json_t* search_context = nullptr,
+                                  size_t maximum_widgets = 16,
+                                  const std::function<bool()>& keep_going = {}) const;
+    void ApplyMarketDefaults();
+    std::string market_locale_;
+    // Liens de navigation repérés par FetchShelves, point de départ de ExploreCatalog.
+    mutable std::mutex catalog_links_mutex_;
+    mutable std::vector<std::string> catalog_links_;
+    // Abonnement lu par FetchShelves (protégé par catalog_links_mutex_).
+    mutable std::string plan_label_;
+    mutable AccountPlan plan_ = AccountPlan::Unknown;
+    mutable PlayerProfile profile_;
+    mutable std::map<std::string, std::string> recent_page_contexts_;
+    json_t* ClientContext() const;
+    std::vector<std::string> ProxyHeaders() const;
+    std::string HostOf(const std::string& url) const;
+
+    CookieJar cookies_;
+    std::optional<DeviceRegistration> registration_;
+    Account account_;
+    HttpClient http_;
+};
+
+
+// Construit l'URI de fiche « game/<slug>/<ASIN> » à partir d'un titre.
+std::string MakeGamePageUri(const std::string& title, const std::string& asin);
+
+} // namespace lunanx::luna

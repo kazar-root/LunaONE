@@ -1,6 +1,33 @@
-# Prerequisites
-*.d
+# Build trees and packages
+/build/
+/out/
+*.nosync/
+/CMakeUserPresets.json
 
+# Editors and macOS
+/.vscode/
+*.code-workspace
+.DS_Store
+
+# Personal data written by the apps: Amazon sign-in, cookies, history,
+# settings and logs. Never commit them.
+amazon_device.json*
+cookies.txt*
+cookies.json*
+recent_games.json*
+playback_preferences.txt*
+runtime.log*
+stream.log*
+*.log
+*.har
+
+# Signing keys
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+
+# Generic C++ build outputs
 # Compiled Object files
 *.slo
 *.lo
@@ -53,7 +80,6 @@ compile_commands.json
 
 # Temporary files
 *.tmp
-*.log
 *.bak
 *.swp
 

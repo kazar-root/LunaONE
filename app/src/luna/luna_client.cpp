@@ -1,0 +1,1736 @@
+// LunaNX-Origin: KazaR-RooT | urn:uuid:57e9877e-564c-4275-ae2a-a70f276bfbed | unit=875d1ab02a1225630dc7
+// Project origin: https://github.com/kazar-root/LunaNX (third-party notices remain applicable).
+#include "core/source_origin.hpp"
+LUNANX_SOURCE_ORIGIN(u875d1ab02a1225630dc7, "875d1ab02a1225630dc7")
+
+#include "luna_client.hpp"
+
+#include "entitlement_policy.hpp"
+#include "recent_games.hpp"
+#include "core/app_paths.hpp"
+#include "core/i18n.hpp"
+#include "core/runtime_journal.hpp"
+
+#include <jansson.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <deque>
+#include <exception>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <random>
+#include <set>
+#include <string_view>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <map>
+
+namespace lunanx::luna
+{
+namespace
+{
+
+using JsonPtr = std::unique_ptr<json_t, decltype(&json_decref)>;
+
+JsonPtr Adopt(json_t* value)
+{
+    return JsonPtr(value, &json_decref);
+}
+
+std::string Str(json_t* object, const char* key)
+{
+    json_t* value = json_object_get(object, key);
+    return json_is_string(value) ? json_string_value(value) : std::string();
+}
+
+std::string FirstStr(json_t* object, std::initializer_list<const char*> keys)
+{
+    for (const char* key : keys)
+    {
+        std::string value = Str(object, key);
+        if (!value.empty())
+            return value;
+    }
+    return {};
+}
+
+std::string RandomHex(size_t length)
+{
+    static thread_local std::mt19937_64 rng(std::random_device {}() ^
+        static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    static const char* digits = "0123456789abcdef";
+    std::string out;
+    out.reserve(length);
+    for (size_t i = 0; i < length; ++i)
+        out.push_back(digits[rng() & 0xf]);
+    return out;
+}
+
+std::string RandomUuid()
+{
+    std::string hex = RandomHex(32);
+    return hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-4" + hex.substr(13, 3) + "-a" +
+           hex.substr(17, 3) + "-" + hex.substr(20, 12);
+}
+
+// Format des identifiants Amazon « 123-1234567-1234567 ».
+std::string RandomAmazonId()
+{
+    static thread_local std::mt19937 rng(std::random_device {}());
+    std::uniform_int_distribution<int> digit(0, 9);
+    std::string out;
+    for (int i = 0; i < 17; ++i)
+    {
+        if (i == 3 || i == 10)
+            out.push_back('-');
+        out.push_back(static_cast<char>('0' + digit(rng)));
+    }
+    return out;
+}
+
+// Parcourt récursivement un document JSON (pages Luna = arbres de widgets).
+void Walk(json_t* node, const std::function<void(json_t*)>& visit)
+{
+    if (json_is_object(node))
+    {
+        visit(node);
+        const char* key = nullptr;
+        json_t* child = nullptr;
+        json_object_foreach(node, key, child)
+            Walk(child, visit);
+    }
+    else if (json_is_array(node))
+    {
+        size_t index = 0;
+        json_t* child = nullptr;
+        json_array_foreach(node, index, child)
+            Walk(child, visit);
+    }
+}
+
+std::string QueryParam(const std::string& url, const std::string& name)
+{
+    const std::string needle = name + "=";
+    size_t pos = url.find("?" + needle);
+    if (pos == std::string::npos)
+        pos = url.find("&" + needle);
+    if (pos == std::string::npos)
+        return {};
+    pos += needle.size() + 1;
+    const size_t end = url.find('&', pos);
+    return url.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+}
+
+// « https://luna.amazon.fr/game/goat-simulator-3/B0G4SQ18L7 » → « game/goat-simulator-3/B0G4SQ18L7 »
+std::string PageUriFromProductUrl(const std::string& url)
+{
+    const size_t pos = url.find("/game/");
+    if (pos == std::string::npos)
+        return {};
+    std::string uri = url.substr(pos + 1);
+    const size_t query = uri.find_first_of("?#");
+    if (query != std::string::npos)
+        uri.erase(query);
+    return uri;
+}
+
+std::string AsinFromPageUri(const std::string& page_uri)
+{
+    const size_t slash = page_uri.find_last_of('/');
+    return slash == std::string::npos ? std::string() : page_uri.substr(slash + 1);
+}
+
+bool IsIgnoredWidgetType(const std::string& type)
+{
+    for (const char* prefix : {"NAV_", "DIALOG", "BASIC_DIALOG", "SEO_", "FOOTER", "SURVEY",
+                               "NOTIFY", "TRANSLATION", "INSTALL_PWA", "GLOBAL_OVERLAY", "LOADING"})
+        if (type.rfind(prefix, 0) == 0)
+            return true;
+    return type.find("PLAYER") != std::string::npos;
+}
+
+std::string FirstActionToken(json_t* widget)
+{
+    size_t index = 0;
+    json_t* action = nullptr;
+    json_array_foreach(json_object_get(widget, "actions"), index, action)
+    {
+        const std::string token = Str(action, "serviceToken");
+        if (!token.empty())
+            return token;
+    }
+    return {};
+}
+
+// Parcourt toutes les chaînes d'un widget (clé, valeur), à n'importe quelle profondeur.
+void WalkStrings(json_t* node, const std::function<void(const char*, const std::string&)>& visit,
+                 const char* key = "")
+{
+    if (json_is_string(node))
+        visit(key, json_string_value(node));
+    else if (json_is_object(node))
+    {
+        const char* child_key = nullptr;
+        json_t* child = nullptr;
+        json_object_foreach(node, child_key, child)
+            WalkStrings(child, visit, child_key);
+    }
+    else if (json_is_array(node))
+    {
+        size_t index = 0;
+        json_t* child = nullptr;
+        json_array_foreach(node, index, child)
+            WalkStrings(child, visit, key);
+    }
+}
+
+bool LooksLikeAsin(const std::string& value)
+{
+    if (value.size() != 10 || value[0] != 'B')
+        return false;
+    return std::all_of(value.begin(), value.end(), [](char c) {
+        return std::isdigit(static_cast<unsigned char>(c)) || std::isupper(static_cast<unsigned char>(c));
+    });
+}
+
+bool IsGameArt(const std::string& value)
+{
+    return value.find("media-amazon.com/images/I/") != std::string::npos &&
+           value.find(".mp4") == std::string::npos;
+}
+
+// Extrait un jeu d'un élément de rangée, quelle que soit la forme exacte du widget :
+// titre, visuels, adresse de fiche (game/<slug>/<ASIN>) et jetons d'action.
+Game ExtractGame(json_t* widget)
+{
+    json_t* data = json_object_get(widget, "presentationData");
+    json_t* hover = json_object_get(data, "hoverDetails");
+    Game game;
+    game.title = FirstStr(data, {"title", "productTitle", "gameTitle", "name"});
+    if (game.title.empty())
+        game.title = FirstStr(hover, {"title", "productTitle"});
+    game.game_id = FirstStr(data, {"gameId", "productId"});
+    game.asin = Str(data, "asin");
+    game.image_landscape = FirstStr(data, {"imageLandscape", "tileImageLandscape", "focusedImageLandscape",
+                                           "focusedImage", "backgroundImageLandscape", "imageUrlLandscape"});
+    game.image_portrait = FirstStr(data, {"imagePortrait", "tileImagePortrait", "focusedImagePortrait",
+                                          "productBackgroundPortrait"});
+    if (game.image_portrait.empty())
+        game.image_portrait = FirstStr(hover, {"imagePortrait", "tileImagePortrait", "productBackgroundPortrait"});
+    // Une image générique peut être une bannière ou un logo carré, pas une jaquette.
+    if (game.image_landscape.empty())
+        game.image_landscape = FirstStr(data, {"imageUrl", "image", "backgroundImage"});
+    game.publisher = FirstStr(hover, {"publishersText"});
+    if (game.publisher.empty())
+        game.publisher = FirstStr(data, {"publishersText"});
+    game.offer_tag = FirstStr(data, {"upTopTag", "badgeText", "tagText", "entitlementText",
+                                     "subscriptionText", "offerText", "channelText"});
+    if (game.offer_tag.empty())
+        game.offer_tag = FirstStr(hover, {"upTopTag", "badgeText", "entitlementText"});
+    game.offer_icon = FirstStr(data, {"upTopTagIcon", "badgeIcon", "badgeImageUrl", "entitlementIcon",
+                                      "channelLogo"});
+    if (game.offer_icon.empty())
+        game.offer_icon = FirstStr(hover, {"upTopTagIcon", "badgeIcon"});
+    game.detail_service_token = FirstActionToken(widget);
+    game.play_service_token = Str(hover, "primaryButtonServiceToken");
+
+    std::string any_art;
+    WalkStrings(widget, [&](const char* key, const std::string& value) {
+        const std::string k = key ? key : "";
+        if (game.page_uri.empty() && value.find("/game/") != std::string::npos &&
+            value.find("amazon.") != std::string::npos)
+            game.page_uri = PageUriFromProductUrl(value);
+        if (game.asin.empty() && value.find("asin=") != std::string::npos)
+            game.asin = QueryParam(value, "asin");
+        if (game.asin.empty() && (k == "asin" || k == "productAsin") && LooksLikeAsin(value))
+            game.asin = value;
+        if (game.game_id.empty() && (k == "gameId" || k == "productId"))
+            game.game_id = value;
+        if (game.play_service_token.empty() && k.find("ServiceToken") != std::string::npos)
+            game.play_service_token = value;
+        if (any_art.empty() && IsGameArt(value))
+            any_art = value;
+        if (game.title.empty() && (k == "title" || k == "productTitle" || k == "gameTitle"))
+            game.title = value;
+        // Étiquettes d'offre, quel que soit leur emplacement (jamais le titre ni la description :
+        // « Premium Edition » y désigne une édition du jeu, pas l'abonnement).
+        const std::string lower_key = LowercaseAscii(k);
+        if (!game.premium_only && lower_key.find("title") == std::string::npos &&
+            lower_key.find("description") == std::string::npos &&
+            (lower_key.find("tag") != std::string::npos || lower_key.find("badge") != std::string::npos ||
+             lower_key.find("entitle") != std::string::npos || lower_key.find("subscri") != std::string::npos ||
+             lower_key.find("offer") != std::string::npos || lower_key.find("channel") != std::string::npos) &&
+            IsPremiumMarker(value))
+            game.premium_only = true;
+    });
+    game.premium_only = game.premium_only || IsPremiumMarker(game.offer_tag) || IsPremiumMarker(game.offer_icon);
+    if (game.image_landscape.empty() && game.image_portrait.empty())
+        game.image_landscape = any_art;
+    if (game.asin.empty())
+        game.asin = AsinFromPageUri(game.page_uri);
+    if (game.asin.empty() && LooksLikeAsin(game.game_id))
+        game.asin = game.game_id;
+    if (game.page_uri.empty() && !game.asin.empty() && !game.title.empty())
+        game.page_uri = MakeGamePageUri(game.title, game.asin);
+
+    size_t index = 0;
+    json_t* genre = nullptr;
+    json_array_foreach(json_object_get(data, "genreTags"), index, genre)
+        if (json_is_string(genre))
+            game.genres.push_back(json_string_value(genre));
+    return game;
+}
+
+// Un vrai jeu, par opposition à une tuile de collection, de genre ou de chaîne.
+bool LooksLikeGameTile(const std::string& type, const Game& game)
+{
+    return type == "RECENTLY_PLAYED_TILE" || type.find("GAME") != std::string::npos || type.find("PRODUCT") != std::string::npos ||
+           !game.asin.empty() || game.page_uri.rfind("game/", 0) == 0;
+}
+
+bool CanOpen(const Game& game)
+{
+    return !game.title.empty() &&
+           (!game.page_uri.empty() || !game.detail_service_token.empty() || !game.play_service_token.empty() ||
+            (!game.play_token.empty() && !game.game_id.empty()));
+}
+
+std::string RowTitle(json_t* row, const std::string& fallback)
+{
+    json_t* data = json_object_get(row, "presentationData");
+    std::string title = FirstStr(data, {"title", "headerText", "header", "heading", "rowTitle",
+                                        "displayTitle", "text", "primaryText", "label"});
+    if (!title.empty())
+        return title;
+    const std::string type = Str(row, "type");
+    if (type == "FEATURED_ROTATOR_V3")
+        return Tr("À la une");
+    if (type == "RANKINGS_ROW")
+        return Tr("Top du moment");
+    if (type.find("UPSELL") != std::string::npos)
+        return Tr("Avec les abonnements partenaires");
+    return fallback;
+}
+
+std::string TabTitle(const std::string& page_type, const std::string& label)
+{
+    if (!label.empty())
+        return label;
+    if (page_type == "landing_home")
+        return Tr("Accueil");
+    if (page_type == "landing_game_night")
+        return Tr("Soirée jeux");
+    if (page_type == "landing_library")
+        return Tr("Ma bibliothèque");
+    if (page_type == "landing_about")
+        return Tr("Découvrir Luna");
+    return "Luna";
+}
+
+// Luna envoie souvent « presentationData » sous forme de texte JSON encodé : on le
+// remplace par l'objet décodé dans tout l'arbre, pour que la suite le lise normalement.
+void DecodeEmbeddedJson(json_t* root)
+{
+    Walk(root, [](json_t* node) {
+        for (const char* key : {"presentationData", "payload"})
+        {
+            json_t* value = json_object_get(node, key);
+            if (!json_is_string(value))
+                continue;
+            const char* text = json_string_value(value);
+            if (!text || (text[0] != '{' && text[0] != '['))
+                continue;
+            json_error_t error {};
+            json_t* parsed = json_loads(text, 0, &error);
+            if (parsed)
+                json_object_set_new(node, key, parsed);
+        }
+    });
+}
+
+// Lit une fiche de jeu : titre, visuel et, surtout, l'action « Jouer » (GAME_SESSION_ASYNC)
+// dont le payload contient le playToken nécessaire au lancement.
+void ParseGameDetail(json_t* page, Game& game)
+{
+    DecodeEmbeddedJson(page);
+    Walk(page, [&game](json_t* node) {
+        const std::string type = Str(node, "type");
+        json_t* data = json_object_get(node, "presentationData");
+        if (type == "PRODUCT_DETAIL" && json_is_object(data))
+        {
+            if (game.title.empty())
+                game.title = Str(data, "title");
+            game.description = Str(data, "description");
+            game.publisher = Str(data, "publishersText");
+            game.developer = Str(data, "developersText");
+            game.age_rating = Str(json_object_get(data, "ageRating"), "categoryText");
+            if (game.offer_tag.empty())
+                game.offer_tag = Str(data, "upTopTag");
+            if (game.offer_icon.empty())
+                game.offer_icon = Str(data, "upTopTagIcon");
+            game.premium_only = game.premium_only || IsPremiumMarker(game.offer_tag) ||
+                                IsPremiumMarker(game.offer_icon);
+            if (game.genres.empty())
+            {
+                size_t genre_index = 0;
+                json_t* genre = nullptr;
+                json_array_foreach(json_object_get(data, "genreTags"), genre_index, genre)
+                    if (json_is_string(genre))
+                        game.genres.push_back(json_string_value(genre));
+            }
+            if (game.image_landscape.empty())
+                game.image_landscape = FirstStr(data, {"tileImageLandscape", "backgroundImageLandscape"});
+            if (game.image_portrait.empty())
+                game.image_portrait = FirstStr(data, {"tileImagePortrait", "productIcon"});
+            if (game.asin.empty())
+                game.asin = Str(data, "asin");
+        }
+        if (Str(node, "target") == "GAME_SESSION_ASYNC" && game.play_token.empty())
+        {
+            json_t* payload = json_object_get(node, "payload");
+            const std::string token = Str(payload, "playToken");
+            const std::string game_id = Str(payload, "gameId");
+            const std::string asin = Str(payload, "asin");
+            if (token.empty() || (game_id.empty() && game.game_id.empty()) ||
+                (!game.asin.empty() && !asin.empty() && game.asin != asin))
+                return;
+            game.play_token = token;
+            if (!game_id.empty())
+                game.game_id = game_id;
+            if (!Str(payload, "productStage").empty())
+                game.product_stage = Str(payload, "productStage");
+            if (!asin.empty())
+                game.asin = asin;
+            if (game.title.empty())
+                game.title = Str(payload, "title");
+            if (game.image_portrait.empty())
+                game.image_portrait = Str(payload, "productIcon");
+        }
+    });
+}
+
+// Signaux employés par le client web Luna, indépendants des libellés traduits.
+bool IsRecentWidget(json_t* widget)
+{
+    const std::string type = Str(widget, "type");
+    json_t* data = json_object_get(widget, "presentationData");
+    const std::string subtype = Str(data, "subtype");
+    const std::string icon = Str(data, "image");
+    return type.rfind("RECENTLY_PLAYED", 0) == 0 || type.rfind("CONTINUE_PLAYING", 0) == 0 ||
+           subtype.rfind("RECENTLY_PLAYED", 0) == 0 || subtype.rfind("CONTINUE_PLAYING", 0) == 0 ||
+           icon.find("icon_continue_playing_carousel") != std::string::npos;
+}
+
+std::vector<Shelf> ParseShelfPage(json_t* page, const std::string& fallback)
+{
+    DecodeEmbeddedJson(page);
+    std::vector<Shelf> shelves;
+    Walk(page, [&](json_t* row) {
+        json_t* children = json_object_get(row, "widgets");
+        const std::string type = Str(row, "type");
+        if (!json_is_array(children) || IsIgnoredWidgetType(type))
+            return;
+        Shelf recent {RowTitle(row, fallback), type, {}, true};
+        Shelf other {recent.title, type, {}};
+        const bool recent_row = IsRecentWidget(row);
+        size_t index = 0;
+        json_t* child = nullptr;
+        json_array_foreach(children, index, child)
+        {
+            const std::string child_type = Str(child, "type");
+            if (IsIgnoredWidgetType(child_type) || child_type.find("GENRE") != std::string::npos ||
+                child_type.find("BANNER") != std::string::npos || child_type.find("EMPTY") != std::string::npos ||
+                child_type.find("BUTTON") != std::string::npos ||
+                json_array_size(json_object_get(child, "widgets")) > 0)
+                continue;
+            Game game = ExtractGame(child);
+            if (!LooksLikeGameTile(child_type, game))
+                continue;
+            if (child_type == "RECENTLY_PLAYED_TILE")
+                ParseGameDetail(child, game);
+            if (!CanOpen(game) && game.detail_service_token.empty() && game.play_service_token.empty())
+                continue;
+            (recent_row || IsRecentWidget(child) ? recent.games : other.games).push_back(std::move(game));
+        }
+        if (!recent.games.empty())
+            shelves.push_back(std::move(recent));
+        if (!other.games.empty())
+            shelves.push_back(std::move(other));
+    });
+    return shelves;
+}
+
+// Détecte la boutique Amazon d'origine des cookies (amazon.fr, .de, .co.uk, .pl, .nl, .com...).
+struct Marketplace
+{
+    const char* cookie_suffix;
+    const char* origin;
+    const char* marketplace_id;
+    const char* locale;
+    const char* country;
+    const char* timezone;
+};
+
+// Serveurs Luna : Amérique du Nord (comptes amazon.com et amazon.ca) et Europe. Le site
+// luna.amazon.* déclare les deux ; getAppConfig précise ensuite celui du compte.
+constexpr const char* kNorthAmericaProxy = "https://proxy-prod.tempo.digital.a2z.com";
+constexpr const char* kEuropeProxy = "https://proxy-prod.eu-west-1.tempo.digital.a2z.com";
+
+const char* DefaultProxyFor(const std::string& country)
+{
+    return country == "US" || country == "CA" ? kNorthAmericaProxy : kEuropeProxy;
+}
+
+constexpr Marketplace kMarketplaces[] = {
+    {"acbfr", "https://luna.amazon.fr", "A13V1IB3VIYZZH", "fr_FR", "FR", "Europe/Paris"},
+    {"acbde", "https://luna.amazon.de", "A1PA6795UKMFR9", "de_DE", "DE", "Europe/Berlin"},
+    {"acbuk", "https://luna.amazon.co.uk", "A1F83G8C2ARO7P", "en_GB", "GB", "Europe/London"},
+    {"acbes", "https://luna.amazon.es", "A1RKKUPIHCS9HS", "es_ES", "ES", "Europe/Madrid"},
+    {"acbit", "https://luna.amazon.it", "APJ6JRA9NG5V4", "it_IT", "IT", "Europe/Rome"},
+    {"acbpl", "https://luna.amazon.pl", "A1C3SOZRARQ6R3", "pl_PL", "PL", "Europe/Warsaw"},
+    {"acbnl", "https://luna.amazon.nl", "A1805IZSGTT6HS", "nl_NL", "NL", "Europe/Amsterdam"},
+    {"acbse", "https://luna.amazon.se", "A2NODRKZP88ZB9", "sv_SE", "SE", "Europe/Stockholm"},
+    {"acbbe", "https://luna.amazon.com.be", "AMEN7PMS3EDWL", "nl_NL", "BE", "Europe/Brussels"},
+    {"acbca", "https://luna.amazon.ca", "A2EUQ1WTGCTBG2", "en_CA", "CA", "America/Toronto"},
+    {"main", "https://luna.amazon.com", "ATVPDKIKX0DER", "en_US", "US", "America/New_York"},
+};
+
+} // namespace
+
+std::string NormalizedGameTitle(const std::string& title)
+{
+    std::string out;
+    bool space = false;
+    for (size_t i = 0; i < title.size(); ++i)
+    {
+        const unsigned char c = static_cast<unsigned char>(title[i]);
+        // ™ (E2 84 A2), ® (C2 AE) et © (C2 A9) ne distinguent pas deux jeux.
+        if (c == 0xE2 && title.compare(i, 3, "\xE2\x84\xA2") == 0)
+        {
+            i += 2;
+            continue;
+        }
+        if (c == 0xC2 && i + 1 < title.size() &&
+            (static_cast<unsigned char>(title[i + 1]) == 0xAE || static_cast<unsigned char>(title[i + 1]) == 0xA9))
+        {
+            ++i;
+            continue;
+        }
+        if (std::isalnum(c) || c >= 0x80)
+        {
+            if (space && !out.empty())
+                out.push_back(' ');
+            space = false;
+            out.push_back(static_cast<char>(std::tolower(c)));
+        }
+        else
+        {
+            space = true;
+        }
+    }
+    return out;
+}
+
+bool InsertGameKeys(std::set<std::string>& seen, const Game& game)
+{
+    const std::string asin = game.asin.empty() ? std::string() : "a:" + game.asin;
+    const std::string title = NormalizedGameTitle(game.title);
+    const std::string title_key = title.empty() ? std::string() : "t:" + title;
+    if (asin.empty() && title_key.empty())
+        return false;
+    const bool known = (!asin.empty() && seen.count(asin)) || (!title_key.empty() && seen.count(title_key));
+    if (!asin.empty())
+        seen.insert(asin);
+    if (!title_key.empty())
+        seen.insert(title_key);
+    return !known;
+}
+
+std::string MakeGamePageUri(const std::string& title, const std::string& asin)
+{
+    std::string slug;
+    for (unsigned char c : title)
+    {
+        if (std::isalnum(c))
+            slug.push_back(static_cast<char>(std::tolower(c)));
+        else if (!slug.empty() && slug.back() != '-')
+            slug.push_back('-');
+    }
+    while (!slug.empty() && slug.back() == '-')
+        slug.pop_back();
+    return "game/" + (slug.empty() ? std::string("game") : slug) + "/" + asin;
+}
+
+LunaClient::LunaClient(CookieJar cookies, std::optional<DeviceRegistration> registration)
+    : cookies_(std::move(cookies)), registration_(std::move(registration))
+{
+    for (const auto& market : kMarketplaces)
+    {
+        if (!cookies_.Value(std::string("at-") + market.cookie_suffix).empty() ||
+            !cookies_.Value(std::string("ubid-") + market.cookie_suffix).empty())
+        {
+            account_.luna_origin = market.origin;
+            account_.marketplace_id = market.marketplace_id;
+            account_.locale = market.locale;
+            account_.country = market.country;
+            account_.timezone = market.timezone;
+            account_.device_serial = cookies_.Value(std::string("ubid-") + market.cookie_suffix);
+            break;
+        }
+    }
+    account_.session_id = cookies_.Value("session-id");
+    if (account_.device_serial.empty())
+        account_.device_serial = RandomAmazonId();
+    if (account_.session_id.empty())
+        account_.session_id = RandomAmazonId();
+    account_.tdi = RandomUuid();
+    ApplyMarketDefaults();
+    account_.proxy_url = DefaultProxyFor(account_.country);
+}
+
+void LunaClient::ApplyMarketDefaults()
+{
+    if (!registration_)
+        return;
+    // Le pays choisi prime sur la boutique des cookies : un compte amazon.de peut être
+    // autrichien ou luxembourgeois, un compte amazon.es portugais.
+    const AmazonMarket& market = FindAmazonMarket(registration_->market_code);
+    account_.luna_origin = "https://luna.amazon." + market.domain;
+    account_.marketplace_id = market.marketplace_id;
+    account_.locale = market.locale;
+    account_.country = market.country;
+    account_.timezone = market.timezone;
+}
+
+bool LunaClient::SetContentLanguage(const std::string& language)
+{
+    if (market_locale_.empty())
+        market_locale_ = account_.locale;
+    const std::string& country = account_.country;
+    // Langues du site Luna (même correspondance que luna.amazon.*) ; pour les autres (russe,
+    // chinois), le catalogue et les jeux restent dans la langue de la boutique.
+    std::string locale = market_locale_;
+    if (language == "en")
+        locale = country == "US" ? "en_US" : country == "CA" ? "en_CA" : "en_GB";
+    else if (language == "fr")
+        locale = country == "CA" ? "fr_CA" : "fr_FR";
+    else if (language == "de")
+        locale = "de_DE";
+    else if (language == "es")
+        locale = "es_ES";
+    else if (language == "it")
+        locale = "it_IT";
+    else if (language == "nl")
+        locale = "nl_NL";
+    else if (language == "pl")
+        locale = "pl_PL";
+    else if (language == "pt")
+        locale = "pt_PT";
+    else if (language == "sv")
+        locale = "sv_SE";
+    account_.locale = locale;
+    return locale != market_locale_;
+}
+
+std::string LunaClient::HostOf(const std::string& url) const
+{
+    const size_t scheme = url.find("://");
+    const size_t start = scheme == std::string::npos ? 0 : scheme + 3;
+    const size_t end = url.find_first_of("/:?", start);
+    return url.substr(start, end == std::string::npos ? std::string::npos : end - start);
+}
+
+std::string LunaClient::FetchAccessToken() const
+{
+    const std::string url = account_.luna_origin + "/token";
+    const std::string cookie = cookies_.HeaderFor(HostOf(url));
+    if (cookie.empty())
+        throw SignInRequired("Aucun cookie Amazon pour " + HostOf(url));
+
+    const HttpResponse response = http_.Get(url, kBrowserUserAgent, {
+        "Cookie: " + cookie,
+        "Accept: application/json",
+        "Content-Type: application/json",
+        "Referer: " + account_.luna_origin + "/",
+    });
+    if (response.status_code == 401 || response.status_code == 403)
+        throw SignInRequired(TrFormat("Session Amazon refusée (HTTP {})", {std::to_string(response.status_code)}));
+    if (response.status_code != 200)
+        throw LunaError(TrFormat("/token a répondu HTTP {}", {std::to_string(response.status_code)}));
+
+    json_error_t error {};
+    auto root = Adopt(json_loads(response.body.c_str(), 0, &error));
+    if (!root)
+        throw LunaError(Tr("/token : réponse illisible"));
+    const std::string token = Str(root.get(), "token");
+    if (!json_is_true(json_object_get(root.get(), "valid")) || token.empty())
+    {
+        const std::string reason = Str(root.get(), "invalidReason");
+        throw SignInRequired(Tr("Session Amazon expirée") + (reason.empty() ? "" : " (" + reason + ")"));
+    }
+    return token;
+}
+
+std::vector<std::string> LunaClient::ProxyHeaders() const
+{
+    std::vector<std::string> headers = {
+        "Content-Type: text/plain;charset=UTF-8",
+        "Accept: */*",
+        "Origin: " + account_.luna_origin,
+        "Referer: " + account_.luna_origin + "/",
+        "x-amz-client-version: -",
+        "x-amz-country-of-residence: " + account_.country,
+        "x-amz-device-serial-number: " + account_.device_serial,
+        "x-amz-device-type: browser",
+        "x-amz-locale: " + account_.locale,
+        "x-amz-marketplace-id: " + account_.marketplace_id,
+        "x-amz-platform: web",
+        "x-amz-react-version: 1.0.37245.0",
+        "x-amz-session-id: " + account_.session_id,
+        "x-amz-tdi: " + account_.tdi,
+        "x-amz-timezone: " + account_.timezone,
+        "x-amzn-requestid: " + RandomUuid(),
+    };
+    if (!account_.access_token.empty())
+        headers.push_back("x-amz-access-token: " + account_.access_token);
+    if (!account_.profile_token.empty())
+        headers.push_back("x-amz-profile-token: " + account_.profile_token);
+    return headers;
+}
+
+json_t* LunaClient::Call(const std::string& operation, json_t* body) const
+{
+    auto owned_body = Adopt(body ? body : json_object());
+    char* text = json_dumps(owned_body.get(), JSON_COMPACT);
+    const std::string payload = text ? text : "{}";
+    free(text);
+
+    const std::string url = account_.proxy_url + "/" + operation;
+    const HttpResponse response = http_.Post(url, kBrowserUserAgent, ProxyHeaders(), payload);
+    LogRuntimeEvent("luna", "call", operation + " status=" + std::to_string(response.status_code));
+
+    if (response.status_code == 401 || response.status_code == 403)
+        throw SignInRequired(TrFormat("{} : accès refusé (HTTP {})",
+                                      {operation, std::to_string(response.status_code)}));
+    if (response.status_code < 200 || response.status_code >= 300)
+    {
+        LogRuntimeEvent("luna", "call_failed",
+                        operation + " status=" + std::to_string(response.status_code) +
+                            " errorType=" + (response.error_type.empty() ? "-" : response.error_type) +
+                            " profileToken=" + (account_.profile_token.empty() ? "absent" : "present") +
+                            " body=" + response.body.substr(0, 200));
+        throw LunaError(TrFormat("{} a répondu HTTP {}", {operation, std::to_string(response.status_code)}) +
+                        (response.error_type.empty() ? "" : " (" + response.error_type + ")") +
+                        " : " + response.body.substr(0, 200));
+    }
+
+    json_error_t error {};
+    json_t* root = json_loads(response.body.empty() ? "{}" : response.body.c_str(), 0, &error);
+    if (!root)
+        throw LunaError(TrFormat("{} : réponse JSON illisible", {operation}));
+    return root;
+}
+
+json_t* LunaClient::ClientContext() const
+{
+    json_t* browser = json_pack(
+        "{s:s, s:s, s:s, s:s, s:s, s:s, s:s}",
+        "browserClientRole", "browser",
+        "browserType", "Chrome",
+        "browserVersion", "141.0.0.0",
+        "deviceModel", "Windows",
+        "deviceType", "Windows",
+        "osName", "Windows",
+        "osVersion", "10");
+    return json_pack("{s:o, s:n, s:n}", "browserMetadata", browser, "refMarker", "referrer");
+}
+
+void LunaClient::LoadAppConfig()
+{
+    // Premier appel sur le serveur du pays du compte ; s'il refuse, l'autre serveur Luna est
+    // essayé avant d'abandonner (un compte américain envoyé en Europe y est refusé).
+    JsonPtr config(nullptr, &json_decref);
+    const std::string primary = account_.proxy_url;
+    try
+    {
+        config = Adopt(Call("getAppConfig", json_pack("{s:s}", "stageOverride", "Prod")));
+    }
+    catch (const LunaError&)
+    {
+        const std::exception_ptr first = std::current_exception();
+        account_.proxy_url = primary == kNorthAmericaProxy ? kEuropeProxy : kNorthAmericaProxy;
+        LogRuntimeEvent("luna", "app_config_fallback",
+                        "country=" + account_.country + " proxy=" + HostOf(account_.proxy_url));
+        try
+        {
+            config = Adopt(Call("getAppConfig", json_pack("{s:s}", "stageOverride", "Prod")));
+        }
+        catch (const LunaError&)
+        {
+            // Les deux serveurs refusent : l'erreur rapportée est celle du serveur du pays.
+            account_.proxy_url = primary;
+            std::rethrow_exception(first);
+        }
+    }
+    json_t* root = config.get();
+
+    json_t* endpoints = json_object_get(root, "endpoints");
+    const std::string proxy = Str(endpoints, "clientProxy");
+    if (!proxy.empty())
+        account_.proxy_url = proxy;
+    const std::string origin = Str(endpoints, "horizonte");
+    if (!origin.empty())
+        account_.luna_origin = origin;
+
+    account_.regions.clear();
+    size_t index = 0;
+    json_t* item = nullptr;
+    json_array_foreach(json_object_get(endpoints, "supportedRegions"), index, item)
+    {
+        Region region;
+        region.region = Str(item, "region");
+        region.endpoint = Str(item, "endpoint");
+        region.endpoint_url = Str(item, "endpointUrl");
+        if (!region.region.empty() && !region.endpoint_url.empty())
+            account_.regions.push_back(region);
+    }
+
+    const std::string marketplace = Str(root, "marketplaceId");
+    if (!marketplace.empty())
+        account_.marketplace_id = marketplace;
+    const std::string tdi = Str(root, "tdi");
+    if (!tdi.empty())
+        account_.tdi = tdi;
+
+    json_t* initial = json_object_get(root, "initialPageContext");
+    account_.initial_page_id = Str(initial, "pageId");
+    if (!Str(initial, "pageType").empty())
+        account_.initial_page_type = Str(initial, "pageType");
+    json_t* profile = json_object_get(root, "profilePageContext");
+    account_.profile_page_id = Str(profile, "pageId");
+    if (!Str(profile, "pageType").empty())
+        account_.profile_page_type = Str(profile, "pageType");
+
+    account_.protocol_features.clear();
+    const char* name = nullptr;
+    json_t* feature = nullptr;
+    json_object_foreach(json_object_get(root, "features"), name, feature)
+    {
+        json_t* value = json_object_get(feature, "value");
+        if (json_is_true(json_object_get(feature, "forwardToProtocol")) && json_is_string(value))
+            account_.protocol_features.emplace_back(name, json_string_value(value));
+    }
+}
+
+void LunaClient::SelectProfile(const Status& status)
+{
+    if (status)
+        status(Tr("Sélection du profil Luna…"));
+
+    // La page « player_selection » liste les profils du compte ; on prend le premier.
+    if (!account_.profile_page_id.empty())
+    {
+        try
+        {
+            auto context = json_pack("{s:s, s:s}", "pageId", account_.profile_page_id.c_str(),
+                                     "pageType", account_.profile_page_type.c_str());
+            auto page = Adopt(GetPage(context));
+            // Comme pour le catalogue, presentationData / payload arrivent en texte JSON.
+            DecodeEmbeddedJson(page.get());
+            Walk(page.get(), [this](json_t* node) {
+                if (account_.profile_id.empty())
+                    account_.profile_id = FirstStr(node, {"profileId", "playerProfileId"});
+            });
+        }
+        catch (const LunaError& ex)
+        {
+            LogRuntimeEvent("luna", "profile_page_failed", ex.what());
+        }
+    }
+
+    if (account_.profile_id.empty())
+    {
+        LogRuntimeEvent("luna", "profile", "aucun profileId trouvé, poursuite sans jeton de profil");
+        return;
+    }
+
+    try
+    {
+        auto login = Adopt(Call("player/playerLogin",
+                                json_pack("{s:s}", "profileId", account_.profile_id.c_str())));
+        const std::string token = Str(login.get(), "token");
+        if (!token.empty())
+            account_.profile_token = token;
+        LogRuntimeEvent("luna", "profile", token.empty() ? "playerLogin sans jeton" : "jeton de profil obtenu");
+    }
+    catch (const LunaError& ex)
+    {
+        // Le catalogue reste consultable sans profil ; seul le lancement en a besoin.
+        LogRuntimeEvent("luna", "profile_login_failed", ex.what());
+    }
+}
+
+void LunaClient::SignIn(const Status& status)
+{
+    if (cookies_.Empty())
+        throw SignInRequired("Aucun fichier de cookies trouvé");
+
+    if (status)
+        status(Tr("Connexion au compte Amazon…"));
+    try
+    {
+        account_.access_token = FetchAccessToken();
+    }
+    catch (const SignInRequired&)
+    {
+        // Appareil enregistré : on régénère des cookies neufs sans redemander le mot de passe.
+        if (!registration_)
+            throw;
+        if (status)
+            status(Tr("Renouvellement de la session Amazon…"));
+        registration_->cookies = AmazonAuth::RefreshCookies(*registration_);
+        AmazonAuth::UpdateStored(*registration_);
+        cookies_.SetCookies(registration_->cookies);
+        account_.access_token = FetchAccessToken();
+    }
+
+    if (status)
+        status(Tr("Chargement de la configuration Luna…"));
+    LoadAppConfig();
+    SelectProfile(status);
+    LogRuntimeEvent("luna", "signed_in",
+                    "origin=" + account_.luna_origin + " regions=" +
+                        std::to_string(account_.regions.size()) +
+                        " profile=" + (account_.profile_token.empty() ? "none" : "ok"));
+}
+
+json_t* LunaClient::GetPage(json_t* page_context, const std::string& service_token, json_t* search_context) const
+{
+    json_t* body = json_pack("{s:i, s:s, s:o, s:{s:[]}, s:[]}",
+                             "timeout", 10000,
+                             "featureScheme", "WEB_V1",
+                             "clientContext", ClientContext(),
+                             "inputContext", "gamepadTypes",
+                             "dynamicFeatures");
+    if (page_context)
+        json_object_set_new(body, "pageContext", page_context);
+    if (!service_token.empty())
+        json_object_set_new(body, "serviceToken", json_string(service_token.c_str()));
+    if (search_context)
+        json_object_set_new(body, "searchContext", search_context);
+    return Call("getPage", body);
+}
+
+size_t LunaClient::ResolveLazyCollections(json_t* page, bool strict_recent, json_t* search_context,
+                                          size_t maximum_widgets, const std::function<bool()>& keep_going) const
+{
+    DecodeEmbeddedJson(page);
+    std::set<std::string> requested;
+    const size_t kMaximumWidgets = maximum_widgets;
+    for (int depth = 0; depth < 4 && requested.size() < kMaximumWidgets; ++depth)
+    {
+        std::vector<json_t*> pending;
+        Walk(page, [&](json_t* node) {
+            const std::string type = Str(node, "type");
+            const bool collection = Str(node, "__type").rfind("CollectionProxy", 0) == 0 ||
+                                    type == "CAROUSEL" || IsRecentWidget(node);
+            if (collection && !IsIgnoredWidgetType(type) && type != "RECENTLY_PLAYED_TILE" &&
+                json_array_size(json_object_get(node, "widgets")) == 0 &&
+                (!Str(node, "serviceToken").empty() || !Str(node, "id").empty()))
+                pending.push_back(node);
+        });
+        bool resolved = false;
+        for (json_t* node : pending)
+        {
+            if (requested.size() >= kMaximumWidgets || (keep_going && !keep_going()))
+                break;
+            const std::string token = Str(node, "serviceToken");
+            const std::string id = Str(node, "id");
+            const std::string key = token.empty() ? id : token;
+            if (!requested.insert(key).second)
+                continue;
+            json_t* body = json_pack("{s:i,s:s,s:o,s:[]}", "timeout", 10000, "featureScheme", "WEB_V1",
+                                     "clientContext", ClientContext(), "dynamicFeatures");
+            if (!token.empty())
+                json_object_set_new(body, "serviceToken", json_string(token.c_str()));
+            else
+            {
+                json_t* context = json_object_get(page, "pageContext");
+                if (!json_is_object(context))
+                {
+                    json_decref(body);
+                    continue;
+                }
+                json_object_set_new(body, "pageContext", json_deep_copy(context));
+                json_object_set_new(body, "widgetId", json_string(id.c_str()));
+            }
+            // Résultats de recherche chargés à part : même contexte que la page (comme le site).
+            if (search_context)
+                json_object_set_new(body, "searchContext", json_deep_copy(search_context));
+            try
+            {
+                auto response = Adopt(Call("getWidget", body));
+                DecodeEmbeddedJson(response.get());
+                json_t* widget = json_object_get(response.get(), "widget");
+                if (!json_is_object(widget))
+                    continue;
+                json_t* old_data = json_object_get(node, "presentationData");
+                json_t* new_data = json_object_get(widget, "presentationData");
+                if (json_is_object(old_data) && json_is_object(new_data))
+                    json_object_update_missing(new_data, old_data);
+                json_object_update(node, widget);
+                resolved = true;
+            }
+            catch (const SignInRequired&) { throw; }
+            catch (const LunaError&)
+            {
+                if (strict_recent && IsRecentWidget(node))
+                    throw;
+                LogRuntimeEvent("luna", "collection_load_failed", "type=" + Str(node, "type"));
+            }
+        }
+        if (!resolved)
+            break;
+    }
+    return requested.size();
+}
+
+std::vector<Shelf> LunaClient::FetchRecentShelves() const
+{
+    std::vector<Shelf> shelves;
+    std::exception_ptr last_error;
+    bool loaded = false;
+    // Le site ouvre /home et /library avec ces contextes sur toutes les boutiques.
+    for (const char* type : {"landing_home", "landing_library"})
+    {
+        std::string stored;
+        {
+            std::lock_guard<std::mutex> lock(catalog_links_mutex_);
+            const auto found = recent_page_contexts_.find(type);
+            if (found != recent_page_contexts_.end())
+                stored = found->second;
+        }
+        json_t* context = stored.empty() ? nullptr : json_loads(stored.c_str(), 0, nullptr);
+        if (!context)
+            context = json_pack("{s:s,s:s}", "pageType", type, "pageId", "default");
+        try
+        {
+            auto page = Adopt(GetPage(context));
+            ResolveLazyCollections(page.get(), true);
+            auto rows = ParseShelfPage(page.get(), {});
+            auto recent = RecentGamesForShelves(rows, {});
+            LogRuntimeEvent("luna", "recent_page_loaded", std::string(type) +
+                " shelves=" + std::to_string(rows.size()) + " games=" + std::to_string(recent.size()));
+            if (!recent.empty())
+                shelves.push_back(Shelf {Tr("Reprendre"), "RECENTLY_PLAYED_ROW", std::move(recent), true});
+            loaded = true;
+        }
+        catch (const SignInRequired&) { throw; }
+        catch (const LunaError&)
+        {
+            last_error = std::current_exception();
+            LogRuntimeEvent("luna", "recent_page_failed", type);
+        }
+    }
+    // Une page vide ne prouve pas l'absence de parties si l'autre n'a pas pu être chargée.
+    if (last_error && (!loaded || shelves.empty()))
+        std::rethrow_exception(last_error);
+    return shelves;
+}
+
+std::vector<Shelf> LunaClient::FetchShelves() const
+{
+    std::vector<Shelf> shelves;
+    // Tuiles sans titre ni visuel : on ouvre leur fiche (en parallèle) pour les compléter.
+    struct Pending
+    {
+        size_t shelf;
+        size_t slot;
+    };
+    std::vector<Pending> pending;
+    constexpr size_t kMaximumDetailFetches = 40;
+    std::set<std::string> seen_tokens;
+    std::vector<std::string> links;
+    std::set<std::string> link_set;
+    auto remember_link = [&](json_t* widget) {
+        const std::string token = FirstActionToken(widget);
+        if (!token.empty() && link_set.insert(token).second)
+            links.push_back(token);
+    };
+
+    auto collect = [&](json_t* page, const std::string& tab_title) {
+        ResolveLazyCollections(page);
+        json_t* context = json_object_get(page, "pageContext");
+        const std::string page_type = Str(context, "pageType");
+        if (page_type == "landing_home" || page_type == "landing_library")
+        {
+            char* text = json_dumps(context, JSON_COMPACT);
+            if (text)
+            {
+                std::lock_guard<std::mutex> lock(catalog_links_mutex_);
+                recent_page_contexts_[page_type] = text;
+                free(text);
+            }
+        }
+        Walk(page, [&](json_t* node) {
+            if (!IsIgnoredWidgetType(Str(node, "type")))
+                remember_link(node);
+        });
+        for (auto& shelf : ParseShelfPage(page, tab_title))
+        {
+            std::vector<Game> games;
+            for (auto& game : shelf.games)
+            {
+                const std::string key = !game.detail_service_token.empty() ? game.detail_service_token
+                                      : !game.asin.empty() ? game.asin : game.title;
+                if (key.empty() || !seen_tokens.insert(shelf.title + "|" + key).second)
+                    continue;
+                if (game.title.empty())
+                    pending.push_back({shelves.size(), games.size()});
+                games.push_back(std::move(game));
+            }
+            if (!games.empty())
+            {
+                shelf.games = std::move(games);
+                shelves.push_back(std::move(shelf));
+            }
+        }
+    };
+
+    json_t* nav_context = account_.initial_page_id.empty()
+        ? json_pack("{s:s}", "pageType", account_.initial_page_type.c_str())
+        : json_pack("{s:s, s:s}", "pageId", account_.initial_page_id.c_str(),
+                    "pageType", account_.initial_page_type.c_str());
+    auto navigation = Adopt(GetPage(nav_context));
+    DecodeEmbeddedJson(navigation.get());
+    collect(navigation.get(), Tr("Accueil"));
+
+    std::vector<std::pair<std::string, std::string>> tabs;
+    std::set<std::string> tab_tokens;
+    std::string plan_status;
+    PlayerProfile profile;
+    Walk(navigation.get(), [&](json_t* node) {
+        const std::string type = Str(node, "type");
+        // Menu du joueur : statut de l'abonnement Luna du compte.
+        if (type == "NAV_ITEM_DROPDOWN_PLAYER" || type == "PLAYER_NAV_ITEM")
+        {
+            json_t* data = json_object_get(node, "presentationData");
+            if (plan_status.empty())
+                plan_status = FirstStr(data, {"customerPlanStatus", "planStatus", "subscriptionStatus"});
+            if (profile.name.empty())
+                profile.name = FirstStr(data, {"profileName", "displayName"});
+            if (profile.avatar_url.empty())
+                profile.avatar_url = Str(data, "avatarUrl");
+        }
+        if (type != "NAV_ITEM" && type != "NAV_SECONDARY_ITEM")
+            return;
+        const std::string label = FirstStr(json_object_get(node, "presentationData"), {"text", "title", "ariaLabel"});
+        const std::string token = FirstActionToken(node);
+        if (!token.empty() && tab_tokens.insert(token).second)
+            tabs.emplace_back(label, token);
+    });
+
+    for (size_t i = 0; i < tabs.size(); ++i)
+    {
+        // Au-delà des premiers onglets, l'exploration en arrière-plan prend le relais.
+        if (i >= 6)
+        {
+            if (link_set.insert(tabs[i].second).second)
+                links.push_back(tabs[i].second);
+            continue;
+        }
+        try
+        {
+            auto page = Adopt(GetPage(nullptr, tabs[i].second));
+            const std::string page_type = Str(json_object_get(page.get(), "pageContext"), "pageType");
+            if (page_type == "landing_search")
+            {
+                // La recherche n'a pas de rangées de jeux mais liste les genres : à explorer.
+                DecodeEmbeddedJson(page.get());
+                Walk(page.get(), [&](json_t* node) {
+                    if (!IsIgnoredWidgetType(Str(node, "type")))
+                        remember_link(node);
+                });
+                continue;
+            }
+            if (page_type == "landing_remote_play" || page_type == "landing_about")
+                continue;
+            collect(page.get(), TabTitle(page_type, tabs[i].first));
+        }
+        catch (const SignInRequired&)
+        {
+            throw;
+        }
+        catch (const LunaError& ex)
+        {
+            LogRuntimeEvent("luna", "tab_failed", tabs[i].first + " " + ex.what());
+        }
+    }
+
+    // Fiches des tuiles incomplètes, une par une, pour ne pas multiplier les connexions.
+    if (pending.size() > kMaximumDetailFetches)
+        pending.resize(kMaximumDetailFetches);
+    for (const auto& item : pending)
+    {
+        Game& game = shelves[item.shelf].games[item.slot];
+        if (!game.title.empty())
+            continue;
+        try
+        {
+            const std::string token = !game.detail_service_token.empty() ? game.detail_service_token
+                                                                         : game.play_service_token;
+            auto page = Adopt(GetPage(nullptr, token));
+            ParseGameDetail(page.get(), game);
+        }
+        catch (const SignInRequired&)
+        {
+            throw;
+        }
+        catch (const LunaError& ex)
+        {
+            LogRuntimeEvent("luna", "tile_detail_failed", ex.what());
+        }
+    }
+
+    // On ne garde que les jeux qu'on sait afficher et ouvrir.
+    size_t total = 0;
+    for (auto& shelf : shelves)
+    {
+        shelf.games.erase(std::remove_if(shelf.games.begin(), shelf.games.end(),
+                                         [](const Game& g) { return !CanOpen(g); }),
+                          shelf.games.end());
+        total += shelf.games.size();
+    }
+    shelves.erase(std::remove_if(shelves.begin(), shelves.end(),
+                                 [](const Shelf& sh) { return sh.games.empty(); }),
+                  shelves.end());
+
+    size_t premium_games = 0;
+    std::set<std::string> offer_tags;
+    for (const auto& shelf : shelves)
+        for (const auto& game : shelf.games)
+        {
+            premium_games += game.premium_only ? 1 : 0;
+            if (!game.offer_tag.empty() && offer_tags.size() < 8)
+                offer_tags.insert(game.offer_tag);
+        }
+    {
+        std::lock_guard<std::mutex> lock(catalog_links_mutex_);
+        catalog_links_ = links;
+        profile_ = std::move(profile);
+        plan_label_ = plan_status;
+        plan_ = PlanFromStatus(plan_status);
+    }
+    std::string tag_list;
+    for (const auto& tag : offer_tags)
+        tag_list += (tag_list.empty() ? "" : " | ") + tag;
+    LogRuntimeEvent("luna", "plan",
+                    "status=" + (plan_status.empty() ? std::string("-") : plan_status) +
+                        " premiumGames=" + std::to_string(premium_games) +
+                        " tags=" + (tag_list.empty() ? std::string("-") : tag_list));
+    LogRuntimeEvent("luna", "catalog", "tabs=" + std::to_string(tabs.size()) +
+                    " shelves=" + std::to_string(shelves.size()) + " games=" + std::to_string(total) +
+                    " detailFetches=" + std::to_string(pending.size()) +
+                    " links=" + std::to_string(links.size()));
+    return shelves;
+}
+
+AccountPlan LunaClient::Plan() const
+{
+    std::lock_guard<std::mutex> lock(catalog_links_mutex_);
+    return plan_;
+}
+
+PlayerProfile LunaClient::Profile() const
+{
+    std::lock_guard<std::mutex> lock(catalog_links_mutex_);
+    return profile_;
+}
+
+std::string LunaClient::PlanLabel() const
+{
+    std::lock_guard<std::mutex> lock(catalog_links_mutex_);
+    return plan_label_;
+}
+
+void LunaClient::ExploreCatalog(std::set<std::string> known,
+                                const std::function<void(std::vector<Game>)>& on_games,
+                                const std::function<bool()>& keep_going) const
+{
+    // Plafond en requêtes (pages et collections différées) : chacune prend ~0,5 s. Les jeux
+    // déjà trouvés restent affichés ; l'exploration reprend après une partie.
+    constexpr int kMaximumRequests = 220;
+    // Collections différées chargées par page explorée (rangées « Tout voir », genres…).
+    constexpr size_t kMaximumWidgetsPerPage = 10;
+    std::deque<std::string> queue;
+    std::set<std::string> queued;
+    {
+        std::lock_guard<std::mutex> lock(catalog_links_mutex_);
+        for (const auto& token : catalog_links_)
+            if (queued.insert(token).second)
+                queue.push_back(token);
+    }
+    auto enqueue = [&](json_t* widget) {
+        const std::string token = FirstActionToken(widget);
+        if (!token.empty() && queued.insert(token).second)
+            queue.push_back(token);
+    };
+
+    std::set<std::string> visited_pages;
+    int pages = 0;
+    int requests = 0;
+    size_t found = 0;
+    while (!queue.empty() && requests < kMaximumRequests && keep_going())
+    {
+        const std::string token = queue.front();
+        queue.pop_front();
+        ++pages;
+        ++requests;
+        try
+        {
+            auto page = Adopt(GetPage(nullptr, token));
+            json_t* root = page.get();
+            DecodeEmbeddedJson(root);
+            json_t* context = json_object_get(root, "pageContext");
+            const std::string page_type = Str(context, "pageType");
+            const std::string page_id = Str(context, "pageId");
+            if (!page_id.empty() && !visited_pages.insert(page_type + "|" + page_id).second)
+                continue;
+            // Fiche d'un jeu : ses rangées « jeux similaires » feraient exploser l'exploration.
+            bool detail_page = false;
+            Walk(root, [&](json_t* node) {
+                if (Str(node, "type") == "PRODUCT_DETAIL")
+                    detail_page = true;
+            });
+            if (detail_page)
+                continue;
+            // Les rangées des pages explorées arrivent souvent vides (chargées à part par le
+            // site) : sans cela, les jeux qu'elles contiennent n'étaient jamais trouvés.
+            const int remaining = kMaximumRequests - requests;
+            if (remaining > 0)
+                requests += static_cast<int>(ResolveLazyCollections(
+                    root, false, nullptr, std::min<size_t>(kMaximumWidgetsPerPage, static_cast<size_t>(remaining)),
+                    keep_going));
+
+            std::vector<Game> batch;
+            const size_t queued_before = queue.size();
+            Walk(root, [&](json_t* node) {
+                json_t* widgets = json_object_get(node, "widgets");
+                if (!json_is_array(widgets) || IsIgnoredWidgetType(Str(node, "type")))
+                    return;
+                enqueue(node);
+                size_t index = 0;
+                json_t* child = nullptr;
+                json_array_foreach(widgets, index, child)
+                {
+                    const std::string type = Str(child, "type");
+                    if (IsIgnoredWidgetType(type))
+                        continue;
+                    json_t* nested = json_object_get(child, "widgets");
+                    if (json_is_array(nested) && json_array_size(nested) > 0)
+                    {
+                        enqueue(child);
+                        continue;
+                    }
+                    Game game = ExtractGame(child);
+                    // Tuile de jeu identifiée (ASIN ou fiche « game/… ») : gardée même sans visuel
+                    // (jaquette LunaNX par défaut). Son lien mène à une fiche, jamais explorée.
+                    const bool identified = !game.asin.empty() || game.page_uri.rfind("game/", 0) == 0;
+                    const bool playable = LooksLikeGameTile(type, game) && CanOpen(game) &&
+                                          (identified || !game.image_portrait.empty() ||
+                                           !game.image_landscape.empty());
+                    if (!playable)
+                    {
+                        if (!identified)
+                            enqueue(child);
+                        continue;
+                    }
+                    if (InsertGameKeys(known, game))
+                        batch.push_back(std::move(game));
+                }
+            });
+            LogRuntimeEvent("luna", "explore_page",
+                            "type=" + page_type + " newGames=" + std::to_string(batch.size()) +
+                                " newLinks=" + std::to_string(queue.size() - queued_before));
+            found += batch.size();
+            if (!batch.empty())
+                on_games(std::move(batch));
+        }
+        catch (const SignInRequired&)
+        {
+            return;
+        }
+        catch (const LunaError& ex)
+        {
+            LogRuntimeEvent("luna", "explore_failed", ex.what());
+        }
+    }
+    LogRuntimeEvent("luna", "explore_done",
+                    "pages=" + std::to_string(pages) + " requests=" + std::to_string(requests) +
+                        " newGames=" + std::to_string(found) + " remainingLinks=" + std::to_string(queue.size()));
+}
+
+std::vector<Game> LunaClient::SearchGames(const std::string& query,
+                                          const std::function<bool()>& keep_going) const
+{
+    std::vector<Game> results;
+    if (query.empty())
+        return results;
+    constexpr int kPageSize = 50;
+    constexpr int kMaximumPages = 3;
+    std::set<std::string> seen;
+    for (int index = 0; index < kMaximumPages && (!keep_going || keep_going()); ++index)
+    {
+        auto search = Adopt(json_pack("{s:s, s:s, s:{s:i, s:i}}", "query", query.c_str(), "sort", "RELEVANCE",
+                                      "pagination", "pageSize", kPageSize, "startIndex", index * kPageSize));
+        if (!search)
+            break;
+        JsonPtr page(nullptr, &json_decref);
+        try
+        {
+            page = Adopt(GetPage(json_pack("{s:s, s:s}", "pageType", "multistate_search_results",
+                                          "pageId", "default"), {}, json_incref(search.get())));
+        }
+        catch (const SignInRequired&)
+        {
+            throw;
+        }
+        catch (const std::runtime_error&)
+        {
+            // Pages suivantes refusées : les résultats déjà reçus restent valables.
+            if (index == 0)
+                throw;
+            break;
+        }
+        if (keep_going && !keep_going())
+            break;
+        ResolveLazyCollections(page.get(), false, search.get(), 8, keep_going);
+        // Aucun résultat : Luna propose alors d'autres jeux, qui ne correspondent pas à la saisie.
+        bool no_results = false;
+        Walk(page.get(), [&no_results](json_t* node) {
+            if (Str(node, "type") == "SEARCH_NO_RESULTS_FOUND")
+                no_results = true;
+        });
+        if (no_results)
+            break;
+        const auto shelves = ParseShelfPage(page.get(), {});
+        // Les résultats sont affichés en grille ; sans grille, toutes les rangées de jeux comptent.
+        const auto is_grid = [](const Shelf& shelf) { return shelf.row_type.find("GRID") != std::string::npos; };
+        const bool has_grid = std::any_of(shelves.begin(), shelves.end(), is_grid);
+        size_t added = 0;
+        for (const auto& shelf : shelves)
+        {
+            if (shelf.recently_played || (has_grid && !is_grid(shelf)))
+                continue;
+            for (const auto& game : shelf.games)
+                if (CanOpen(game) && InsertGameKeys(seen, game))
+                {
+                    results.push_back(game);
+                    ++added;
+                }
+        }
+        if (added < static_cast<size_t>(kPageSize))
+            break;
+    }
+    LogRuntimeEvent("luna", "search", "results=" + std::to_string(results.size()));
+    return results;
+}
+
+Game LunaClient::FetchGameDetail(const Game& input) const
+{
+    Game game = input;
+    const auto launchReady = [&] { return !game.play_token.empty() && !game.game_id.empty(); };
+    if (launchReady())
+        return game;
+    // Une action peut ouvrir une page valide sans fournir la commande de lancement.
+    bool opened = false;
+    bool offer_required = false;
+    const auto read = [&](const auto& fetch, const char* failure_event) {
+        try
+        {
+            auto page = Adopt(fetch());
+            if (page)
+            {
+                opened = true;
+                ParseGameDetail(page.get(), game);
+                if (!launchReady())
+                    Walk(page.get(), [&](json_t* widget) {
+                        if (Str(widget, "type") == "PRODUCT_DETAIL_PRIMARY_BUTTON")
+                            Walk(widget, [&](json_t* action) {
+                                offer_required = offer_required || Str(action, "target") == "PURCHASE_DETAIL";
+                            });
+                    });
+            }
+        }
+        catch (const SignInRequired&)
+        {
+            throw;
+        }
+        catch (const std::runtime_error& ex)
+        {
+            LogRuntimeEvent("luna", failure_event, ex.what());
+        }
+    };
+    // Un jeton sans identifiant ne peut pas être utilisé pour créer une session.
+    game.play_token.clear();
+    if (!game.detail_service_token.empty())
+        read([&] { return GetPage(nullptr, game.detail_service_token); }, "detail_by_token_failed");
+    if (!launchReady() && !game.page_uri.empty())
+        read([&] {
+            return GetPage(account_.initial_page_id.empty()
+                ? json_pack("{s:s}", "pageUri", game.page_uri.c_str())
+                : json_pack("{s:s, s:s}", "pageUri", game.page_uri.c_str(),
+                            "pageId", account_.initial_page_id.c_str()));
+        }, "detail_by_uri_failed");
+    if (!launchReady() && !game.play_service_token.empty() && game.play_service_token != game.detail_service_token)
+        read([&] { return GetPage(nullptr, game.play_service_token); }, "detail_by_play_action_failed");
+
+    if (!opened)
+        throw LunaError(TrFormat("Impossible d'ouvrir la fiche de « {} »", {game.title}));
+    if (!launchReady() && offer_required)
+        throw LunaError(Tr("Amazon Luna demande de vérifier l’offre associée à ce jeu sur sa fiche officielle."));
+    if (!launchReady())
+        throw LunaError(Tr("Amazon Luna n’a fourni aucune commande de lancement pour ce jeu."));
+    return game;
+}
+
+std::vector<Region> LunaClient::MeasureRegions() const
+{
+    std::vector<Region> regions = account_.regions;
+    for (auto& region : regions)
+    {
+        int best = -1;
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const auto started = std::chrono::steady_clock::now();
+            try
+            {
+                const HttpResponse response = http_.Get(
+                    region.endpoint_url + "?timestamp=" + std::to_string(now_ms),
+                    kBrowserUserAgent, {"Origin: " + account_.luna_origin}, 3, 4);
+                const int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started).count());
+                if (response.status_code == 200 && (best < 0 || elapsed < best))
+                    best = elapsed;
+            }
+            catch (const std::runtime_error&)
+            {
+                // A missing measurement must not prevent Luna from choosing a region.
+                break;
+            }
+        }
+        region.latency_ms = best;
+    }
+    std::stable_sort(regions.begin(), regions.end(), [](const Region& a, const Region& b) {
+        if ((a.latency_ms < 0) != (b.latency_ms < 0))
+            return a.latency_ms >= 0;
+        return a.latency_ms < b.latency_ms;
+    });
+    return regions;
+}
+
+bool LunaClient::IsPinChallengeRequired() const
+{
+    auto result = Adopt(Call("isPinChallengeRequired",
+                             json_pack("{s:[s]}", "actions", "LAUNCH_GAME_10PLUS")));
+    json_t* challenge = json_object_get(result.get(), "challenge");
+    if (json_is_boolean(challenge))
+        return json_is_true(challenge);
+    // LunaCore 2026-11-18. Luna returns ALLOW when launch needs no PIN.
+    if (const char* text = json_string_value(challenge))
+    {
+        const std::string_view value(text);
+        return value != "ALLOW" && value != "NONE" && value != "false" && value != "FALSE";
+    }
+    return true;
+}
+
+std::string LunaClient::CreateGameSessionJob(
+    const Game& game,
+    const std::string& offer_sdp,
+    const std::vector<std::string>& requested_channels,
+    const std::vector<Region>& regions,
+    const std::string& preferred_region,
+    const std::string& data_usage) const
+{
+    json_t* features = json_array();
+    for (const auto& feature : account_.protocol_features)
+    {
+        json_array_append_new(features, json_pack("{s:s, s:s}", "name", feature.first.c_str(), "value",
+                                                  feature.second.c_str()));
+    }
+    json_t* channels = json_array();
+    for (const auto& channel : requested_channels)
+        json_array_append_new(channels, json_string(channel.c_str()));
+
+    json_t* client_context = ClientContext();
+    json_t* browser = json_incref(json_object_get(client_context, "browserMetadata"));
+    json_t* signaling = json_pack("{s:s, s:s, s:{s:o, s:o, s:o}}",
+                                  "type", "offer",
+                                  "sdp", offer_sdp.c_str(),
+                                  "extras",
+                                  "features", features,
+                                  "clientContext", browser,
+                                  "requestedChannels", channels);
+    // Le serveur attend l'offre sous forme de JSON sérialisé dans une chaîne, pas d'objet.
+    char* signaling_text = json_dumps(signaling, JSON_COMPACT);
+    json_decref(signaling);
+    if (!signaling_text)
+        throw LunaError(Tr("Impossible de préparer l'offre WebRTC"));
+    json_t* signaling_string = json_string(signaling_text);
+    free(signaling_text);
+
+    json_t* latencies = json_array();
+    for (const auto& region : regions)
+    {
+        if (region.latency_ms < 0)
+            continue;
+        json_array_append_new(latencies, json_pack(
+            "{s:s, s:s, s:s, s:i}",
+            "endpoint", region.endpoint.c_str(),
+            "endpointUrl", region.endpoint_url.c_str(),
+            "region", region.region.c_str(),
+            "latencyMs", region.latency_ms));
+    }
+    json_t* preferences = json_array();
+    std::string chosen = preferred_region;
+    if ((chosen.empty() || chosen == "Auto") && !regions.empty() && regions.front().latency_ms >= 0)
+        chosen = regions.front().region;
+    if (!chosen.empty() && chosen != "Auto")
+        json_array_append_new(preferences, json_pack("{s:s}", "region", chosen.c_str()));
+
+    json_t* body = json_pack(
+        "{s:i, s:s, s:s, s:s, s:o, s:o, s:o, s:b, s:b, s:{s:s, s:[s]}, s:o}",
+        "timeout", 10000,
+        "gameId", game.game_id.c_str(),
+        "playToken", game.play_token.c_str(),
+        "productStage", game.product_stage.c_str(),
+        "signalingRequest", signaling_string,
+        "regionLatencies", latencies,
+        "regionPreferences", preferences,
+        "transferRequest", 0,
+        "revokeProfileActivityRequest", 0,
+        "clientFeatures", "dataUsage", data_usage.c_str(), "routing", "TURN",
+        "clientContext", client_context);
+    if (!body)
+        throw LunaError(Tr("Impossible de préparer la requête de session"));
+
+    {
+        // Types et tailles des champs uniquement (aucun jeton ni identifiant).
+        std::string shape;
+        const char* key = nullptr;
+        json_t* value = nullptr;
+        json_object_foreach(body, key, value)
+        {
+            shape += std::string(shape.empty() ? "" : " ") + key + "=";
+            if (json_is_string(value))
+                shape += "str(" + std::to_string(json_string_length(value)) + ")";
+            else if (json_is_array(value))
+                shape += "arr(" + std::to_string(json_array_size(value)) + ")";
+            else if (json_is_object(value))
+                shape += "obj(" + std::to_string(json_object_size(value)) + ")";
+            else if (json_is_boolean(value))
+                shape += "bool";
+            else if (json_is_integer(value))
+                shape += "int";
+            else
+                shape += "null";
+        }
+        LogRuntimeEvent("luna", "create_request",
+                        shape + " productStage=" + game.product_stage + " features=" +
+                            std::to_string(account_.protocol_features.size()) + " dataUsage=" + data_usage +
+                            " profileToken=" +
+                            (account_.profile_token.empty() ? "absent" : "present"));
+    }
+    auto result = Adopt(Call("createGameSessionJob", body));
+    const std::string job_id = Str(result.get(), "gameSessionJobId");
+    if (!job_id.empty())
+        return job_id;
+    const auto error = json_integer_value(json_object_get(result.get(), "errorCode"));
+    if (error == 151)
+        throw LunaError(Tr("Une partie Luna est déjà active sur ce profil. Quitte-la, puis réessaie."));
+    if (error == 150 || error == 152 || error == 154)
+        throw LunaError(Tr("Luna a atteint la limite de parties simultanées. Quitte une partie, puis réessaie."));
+    if (error == 153)
+        throw LunaError(Tr("Luna demande de sélectionner une sauvegarde avant de lancer ce jeu."));
+    throw LunaError(error == 0 ? Tr("Luna n'a pas créé de session de jeu") :
+        TrFormat("Luna n'a pas créé de session de jeu (code {})", {std::to_string(error)}));
+}
+
+void LunaClient::CancelGameSessionJob(const std::string& job_id) const
+{
+    const auto result = Adopt(Call("cancelGameSessionJob",
+        json_pack("{s:i,s:s}", "timeout", 10000, "jobId", job_id.c_str())));
+    if (json_integer_value(json_object_get(result.get(), "errorCode")) != 0)
+        throw LunaError(Tr("Luna a refusé d’annuler le lancement."));
+}
+
+void LunaClient::TerminateGameSession(const std::string& session_id) const
+{
+    const auto result = Adopt(Call("terminateGameSession",
+        json_pack("{s:i,s:[s],s:s}", "timeout", 10000, "sessionIds", session_id.c_str(),
+                  "terminationReason", "OVERLAY_EXIT")));
+    if (json_array_size(json_object_get(result.get(), "failedIds")) > 0 ||
+        json_integer_value(json_object_get(result.get(), "errorCode")) != 0)
+        throw LunaError(Tr("Luna a refusé de terminer la partie."));
+}
+
+SessionJob LunaClient::GetGameSessionJob(const std::string& job_id) const
+{
+    auto result = Adopt(Call("getGameSessionJob",
+                             json_pack("{s:s}", "gameSessionJobId", job_id.c_str())));
+    json_t* root = result.get();
+
+    SessionJob job;
+    job.job_id = job_id;
+    job.raw_status = Str(root, "status");
+    json_t* retry = json_object_get(root, "retryAfterMs");
+    if (json_is_integer(retry))
+        job.retry_after_ms = static_cast<int>(json_integer_value(retry));
+    json_t* position = json_object_get(root, "positionInLine");
+    if (json_is_number(position))
+        job.position_in_line = static_cast<int>(json_number_value(position));
+    json_t* expected_wait = json_object_get(root, "expectedWaitTimeSeconds");
+    if (json_is_number(expected_wait))
+        job.expected_wait_seconds = static_cast<int>(json_number_value(expected_wait));
+
+    json_t* session = json_object_get(root, "gameSession");
+    if (json_is_object(session))
+    {
+        job.session_id = Str(session, "sessionId");
+        job.connection_id = Str(session, "connectionId");
+        job.region = Str(session, "region");
+        job.routing = Str(session, "routing");
+        json_t* answer = json_object_get(session, "signalingResponse");
+        // Normalement un objet {type, sdp} ; on accepte aussi une chaîne JSON.
+        JsonPtr parsed(nullptr, &json_decref);
+        if (json_is_string(answer))
+        {
+            json_error_t error {};
+            parsed.reset(json_loads(json_string_value(answer), 0, &error));
+            answer = parsed.get();
+        }
+        job.answer_sdp = Str(answer, "sdp");
+    }
+
+    if (job.raw_status == "COMPLETED_SUCCEEDED" && !job.answer_sdp.empty())
+        job.status = SessionJobStatus::Ready;
+    else if (job.raw_status.find("FAIL") != std::string::npos ||
+             job.raw_status.find("CANCEL") != std::string::npos ||
+             job.raw_status == "COMPLETED_SUCCEEDED")
+    {
+        job.status = SessionJobStatus::Failed;
+        job.error = FirstStr(root, {"failureReason", "errorCode", "message"});
+        if (job.error.empty())
+            job.error = job.raw_status;
+    }
+    return job;
+}
+
+} // namespace lunanx::luna

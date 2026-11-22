@@ -1,0 +1,40 @@
+// LunaNX-Origin: KazaR-RooT | urn:uuid:57e9877e-564c-4275-ae2a-a70f276bfbed | unit=c2fa90f791492a3bb529
+// Project origin: https://github.com/kazar-root/LunaNX (third-party notices remain applicable).
+
+#pragma once
+
+#include <string>
+#include <vector>
+
+namespace lunanx::luna
+{
+
+// Identifiants ICE/DTLS extraits de l'offre générée par libpeer.
+struct LocalTransport
+{
+    std::string ice_ufrag;
+    std::string ice_pwd;
+    std::string fingerprint;           // « sha-256 AA:BB:... »
+    std::vector<std::string> candidates; // lignes « a=candidate:... »
+};
+
+LocalTransport ParseLocalTransport(const std::string& libpeer_sdp);
+
+// Offre au format du client web Luna (capture Chrome) réduite à ce que la Switch décode :
+// vidéo H.264 Constrained Baseline (PT 96, rtx 97) en réception, Opus stéréo, data channel SCTP.
+// profile is offered first on payload 96; Main and High keep Constrained
+// Baseline on 98 for the server to fall back to. full_audio asks for Opus at
+// its highest rate (Ultra profile).
+enum class OfferedProfile { ConstrainedBaseline, Main, High };
+std::string BuildLunaOffer(const LocalTransport& transport, int video_height = 720, int fps = 60,
+                           OfferedProfile profile = OfferedProfile::ConstrainedBaseline, bool transport_cc = false,
+                           bool full_audio = false);
+
+// Normalise la réponse du serveur pour libpeer : fins de ligne CRLF et retrait des
+// codecs auxiliaires que la Switch ne traite pas (RED/ULPFEC/FlexFEC).
+std::string NormalizeLunaAnswer(const std::string& answer_sdp);
+
+// Payload type H.264 choisi par le serveur dans la réponse (‑1 si absent).
+int AnsweredH264PayloadType(const std::string& answer_sdp);
+
+} // namespace lunanx::luna

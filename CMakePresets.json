@@ -1,0 +1,93 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "macos",
+      "displayName": "macOS with Xcode",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/macos",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": { "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0" }
+    },
+    {
+      "name": "macos-universal",
+      "displayName": "macOS arm64 and x86_64 with Xcode",
+      "inherits": "macos",
+      "binaryDir": "${sourceDir}/build/macos-universal",
+      "cacheVariables": { "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64" }
+    },
+    {
+      "name": "ipados",
+      "displayName": "iPadOS device with Xcode",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/ipados",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "17.0",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "ipados-simulator",
+      "displayName": "iPadOS Simulator with Xcode",
+      "inherits": "ipados",
+      "binaryDir": "${sourceDir}/build/ipados-simulator",
+      "cacheVariables": {
+        "CMAKE_OSX_SYSROOT": "iphonesimulator",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO"
+      }
+    },
+    {
+      "name": "desktop-cli",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUNACORE_BUILD_MACOS_PLAYER": "OFF",
+        "LUNACORE_BUILD_IPADOS_APP": "OFF"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux native app and CLI with Ninja",
+      "inherits": "desktop-cli",
+      "binaryDir": "${sourceDir}/build/linux",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": { "LUNACORE_BUILD_LINUX_APP": "ON" }
+    },
+    {
+      "name": "windows",
+      "displayName": "Windows native app and CLI with Ninja",
+      "inherits": "desktop-cli",
+      "binaryDir": "${sourceDir}/build/windows",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "macos", "configurePreset": "macos", "configuration": "Debug" },
+    { "name": "macos-universal", "configurePreset": "macos-universal", "configuration": "Release" },
+    { "name": "ipados", "configurePreset": "ipados", "configuration": "RelWithDebInfo", "targets": ["LunaONE-iOS"] },
+    { "name": "ipados-simulator", "configurePreset": "ipados-simulator", "configuration": "Debug", "targets": ["LunaONE-iOS"] },
+    { "name": "linux", "configurePreset": "linux" },
+    { "name": "windows", "configurePreset": "windows" }
+  ],
+  "testPresets": [
+    {
+      "name": "macos",
+      "configurePreset": "macos",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "macos-universal",
+      "configurePreset": "macos-universal",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    { "name": "linux", "configurePreset": "linux", "output": { "outputOnFailure": true } },
+    { "name": "windows", "configurePreset": "windows", "output": { "outputOnFailure": true } }
+  ]
+}

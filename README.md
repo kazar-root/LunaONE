@@ -22,8 +22,6 @@
 
 Get **[LunaONE V0.2](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, FreeBSD, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
 
-Website: **[kazar-root.github.io/LunaONE](https://kazar-root.github.io/LunaONE/)**
-
 ## What is LunaONE?
 
 LunaONE lets you play your Amazon Luna games in a native app instead of a web browser. It is built for the couch: pick up a controller, browse the catalog, press A and play. The same app runs on your Mac, your PC, your Linux or FreeBSD machine, your iPad, your Android phone and your Google TV.

@@ -5,6 +5,8 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include "player.hpp"
+#include "fullscreen.hpp"
+#include "../desktop/sdl_controllers.hpp"
 #include "video_decoder.hpp"
 #include "artwork.hpp"
 #include "stream/launch_status.hpp"
@@ -19,7 +21,6 @@
 #include <mmsystem.h>
 #include <windowsx.h>
 #include <opus.h>
-#include <xinput.h>
 
 #include <algorithm>
 #include <array>
@@ -43,34 +44,6 @@ constexpr UINT playback_ended = WM_APP + 6;
 constexpr UINT exit_requested = WM_APP + 7;
 // B on the launch screen: « Êtes-vous sûr ? ».
 constexpr UINT confirm_cancel = WM_APP + 8;
-
-class Controllers
-{
-  public:
-    Controllers()
-    {
-        library_ = LoadLibraryExW(L"xinput1_4.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (!library_)
-            library_ = LoadLibraryExW(L"xinput9_1_0.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (library_)
-            read_ = reinterpret_cast<decltype(read_)>(GetProcAddress(library_, "XInputGetState"));
-    }
-
-    ~Controllers()
-    {
-        if (library_)
-            FreeLibrary(library_);
-    }
-
-    bool Read(DWORD index, XINPUT_STATE& state) const
-    {
-        return read_ && read_(index, &state) == ERROR_SUCCESS;
-    }
-
-  private:
-    HMODULE library_{};
-    decltype(&XInputGetState) read_{};
-};
 
 std::wstring Wide(const std::string& text)
 {
@@ -407,6 +380,13 @@ class Player
                     return 0;
                 }
                 break;
+            case WM_SYSCOMMAND:
+                if (IsMaximizeCommand(wparam))
+                {
+                    if (!self->fullscreen_) self->ToggleFullscreen();
+                    return 0;
+                }
+                break;
             case new_frame: self->Present(); return 0;
             case exit_requested: self->Finish(); return 0;
             case confirm_cancel: self->ConfirmCancel(); return 0;
@@ -429,28 +409,10 @@ class Player
         return DefWindowProcW(window, message, wparam, lparam);
     }
 
-    // Borderless full screen: a popup window over the monitor, which keeps its mode.
     void SetFullscreen(bool fullscreen)
     {
         if (fullscreen == fullscreen_ || !window_) return;
-        if (fullscreen)
-        {
-            placement_.length = sizeof(placement_);
-            GetWindowPlacement(window_, &placement_);
-            MONITORINFO monitor {sizeof(monitor)};
-            GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor);
-            SetWindowLongPtrW(window_, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-            SetWindowPos(window_, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
-                         monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
-                         SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
-        }
-        else
-        {
-            SetWindowLongPtrW(window_, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
-            SetWindowPlacement(window_, &placement_);
-            SetWindowPos(window_, nullptr, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-        }
+        SetBorderlessFullscreen(window_, fullscreen, placement_);
         fullscreen_ = fullscreen;
     }
 
@@ -535,24 +497,32 @@ class Player
         }
     }
 
-    // XInput has no change notification. Poll it on a thread of its own every
-    // 2 ms: WM_TIMER ticks every 15.6 ms at best and is only delivered once
-    // every other message, including each new picture, has been handled.
+    // The pad state has no change notification. Poll it on a thread of its
+    // own every 2 ms: WM_TIMER ticks every 15.6 ms at best and is only
+    // delivered once every other message, including each new picture, has
+    // been handled. SDL reads Xbox, PlayStation, Nintendo and 8BitDo pads, over
+    // USB or Bluetooth, and belongs to this thread for the whole game.
     void StartInput()
     {
         input_running_ = true;
         input_ = std::thread([this, target = window_] {
             const bool fine_timer = timeBeginPeriod(1) == TIMERR_NOERROR;
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+            lunaone::desktop::SdlControllers controllers;
             std::uint32_t previous_buttons = 0;
             while (input_running_.load())
             {
+                lunanx::input::GamepadState pad;
+                if (controllers.Read(pad))
+                {
+                    controller_seen_ = true;
+                    family_ = controllers.Family();
+                }
                 // The confirmation box of the launch screen belongs to the window too.
                 const HWND box = GetWindow(target, GW_ENABLEDPOPUP);
                 const HWND foreground = GetForegroundWindow();
                 if (foreground == target || (box && box != target && foreground == box))
                 {
-                    const auto pad = ReadGamepad();
                     const std::uint32_t pressed = pad.buttons & ~previous_buttons;
                     previous_buttons = pad.buttons;
                     if (lunanx::input::ExitStreamChord(pad))
@@ -588,30 +558,6 @@ class Player
             input_.join();
     }
 
-    // Input thread only.
-    lunanx::input::GamepadState ReadGamepad()
-    {
-        XINPUT_STATE state{};
-        if (controller_ < XUSER_MAX_COUNT && !controllers_.Read(controller_, state))
-            controller_ = XUSER_MAX_COUNT;
-        if (controller_ == XUSER_MAX_COUNT && Clock::now() >= next_gamepad_scan_)
-        {
-            next_gamepad_scan_ = Clock::now() + 500ms;
-            for (DWORD index = 0; index < XUSER_MAX_COUNT; ++index)
-                if (controllers_.Read(index, state))
-                {
-                    controller_ = index;
-                    controller_seen_ = true;
-                    break;
-                }
-        }
-        if (controller_ == XUSER_MAX_COUNT)
-            return {};
-        const auto& pad = state.Gamepad;
-        return {pad.wButtons, pad.bLeftTrigger, pad.bRightTrigger,
-                pad.sThumbLX, pad.sThumbLY, pad.sThumbRX, pad.sThumbRY};
-    }
-
     // « Oui » leaves, « Non » (the default) stays on the launch screen. The
     // controller answers too: A Oui, B Non.
     void ConfirmCancel()
@@ -620,7 +566,9 @@ class Player
         confirming_ = true;
         const auto title = Wide(lunanx::Tr("Annuler le lancement du jeu"));
         const auto question = Wide(lunanx::Tr("Êtes-vous sûr ?") + "\n\n" +
-                                   lunanx::TrFormat("{} : Oui    {} : Non", {"A", "B"}));
+                                   lunanx::TrFormat("{} : Oui    {} : Non",
+                                       {lunanx::input::PadButtonName(family_, lunanx::input::PadButton::A),
+                                        lunanx::input::PadButtonName(family_, lunanx::input::PadButton::B)}));
         const int answer = MessageBoxW(window_, question.c_str(), title.c_str(), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
         confirming_ = false;
         if (answer == IDYES) Finish();
@@ -834,17 +782,17 @@ class Player
     std::wstring status_ = paint_status_;
     std::shared_ptr<const VideoFrame> next_frame_, displayed_frame_, last_painted_;
     std::unique_ptr<VideoDecoder> video_;
-    Controllers controllers_;
     Audio audio_;
     lunanx::LunaStreamSession session_;
     std::thread cleanup_;
     std::thread input_;
     std::atomic<bool> input_running_{false};
-    Clock::time_point began_{}, first_frame_{}, last_frame_{}, video_arrival_{}, next_gamepad_scan_{};
+    Clock::time_point began_{}, first_frame_{}, last_frame_{}, video_arrival_{};
     std::chrono::milliseconds max_frame_gap_{};
     std::uint64_t displayed_ = 0;
-    DWORD controller_ = XUSER_MAX_COUNT;
     std::atomic<bool> controller_seen_{false};
+    // The labels of the pad in hand, for the launch screen's question.
+    std::atomic<lunanx::input::ControllerFamily> family_{lunanx::input::ControllerFamily::Xbox};
     bool audio_warning_ = false, started_ = false, stopping_ = false;
     std::string error_;
 };

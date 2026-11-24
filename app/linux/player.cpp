@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "player.hpp"
+#include "fullscreen.hpp"
+#include "../desktop/sdl_controllers.hpp"
 #include "artwork.hpp"
+#include "platform.hpp"
 #include "stream/launch_status.hpp"
 #include "core/i18n.hpp"
 #include "stream/performance_overlay.hpp"
@@ -25,7 +28,6 @@ extern "C" {
 #include <condition_variable>
 #include <deque>
 #include <thread>
-#include <filesystem>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -41,6 +43,32 @@ namespace
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 using namespace lunanx::input;
+
+// A thread that is asked to stop and joined at the end of its scope, as
+// std::jthread. FreeBSD 14.4, 15.0 and 15.1 ship libc++ 19, which keeps
+// std::jthread experimental.
+class ScopedThread
+{
+  public:
+    template <class Function>
+    explicit ScopedThread(Function function)
+        : thread_([this, function = std::move(function)]() mutable { function(stop_); })
+    {
+    }
+    ScopedThread(const ScopedThread&) = delete;
+    ScopedThread& operator=(const ScopedThread&) = delete;
+    ~ScopedThread() { Stop(); }
+
+    void Stop()
+    {
+        stop_ = true;
+        if (thread_.joinable()) thread_.join();
+    }
+
+  private:
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
 
 struct Frame
 {
@@ -205,6 +233,7 @@ class AudioAndInput
     explicit AudioAndInput(const lunanx::PlaybackPreferences& settings)
         : volume_(settings.volume), buffer_(settings.buffer_ms)
     {
+        lunaone::desktop::SetControllerHints();
         if (SDL_Init((settings.audio ? SDL_INIT_AUDIO : 0) | SDL_INIT_GAMECONTROLLER) < 0)
             SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
         SDL_AudioSpec requested{};
@@ -254,29 +283,15 @@ class AudioAndInput
         {
             next_scan_ = Clock::now() + 500ms;
             for (int i = 0; i < SDL_NumJoysticks() && !controller_; ++i)
-                if (SDL_IsGameController(i))
-                    controller_ = SDL_GameControllerOpen(i);
+                if (SDL_IsGameController(i) && (controller_ = SDL_GameControllerOpen(i)))
+                    family_ = lunaone::desktop::ControllerFamilyOf(controller_);
         }
-        GamepadState state;
-        if (!controller_) return state;
-        for (auto [button, mask] : {std::pair{SDL_CONTROLLER_BUTTON_A, kA}, std::pair{SDL_CONTROLLER_BUTTON_B, kB},
-            std::pair{SDL_CONTROLLER_BUTTON_X, kX}, std::pair{SDL_CONTROLLER_BUTTON_Y, kY},
-            std::pair{SDL_CONTROLLER_BUTTON_DPAD_UP, kDpadUp}, std::pair{SDL_CONTROLLER_BUTTON_DPAD_DOWN, kDpadDown},
-            std::pair{SDL_CONTROLLER_BUTTON_DPAD_LEFT, kDpadLeft}, std::pair{SDL_CONTROLLER_BUTTON_DPAD_RIGHT, kDpadRight},
-            std::pair{SDL_CONTROLLER_BUTTON_LEFTSHOULDER, kLeftShoulder}, std::pair{SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, kRightShoulder},
-            std::pair{SDL_CONTROLLER_BUTTON_LEFTSTICK, kLeftThumb}, std::pair{SDL_CONTROLLER_BUTTON_RIGHTSTICK, kRightThumb},
-            std::pair{SDL_CONTROLLER_BUTTON_START, kStart}, std::pair{SDL_CONTROLLER_BUTTON_BACK, kBack}})
-            if (SDL_GameControllerGetButton(controller_, button))
-                state.buttons |= mask;
-        const auto axis = [this](SDL_GameControllerAxis id) { return SDL_GameControllerGetAxis(controller_, id); };
-        state.left_x = axis(SDL_CONTROLLER_AXIS_LEFTX);
-        state.left_y = static_cast<std::int16_t>(-std::max<int>(axis(SDL_CONTROLLER_AXIS_LEFTY), -32767));
-        state.right_x = axis(SDL_CONTROLLER_AXIS_RIGHTX);
-        state.right_y = static_cast<std::int16_t>(-std::max<int>(axis(SDL_CONTROLLER_AXIS_RIGHTY), -32767));
-        state.left_trigger = static_cast<std::uint8_t>(std::max<int>(0, axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT)) * 255 / 32767);
-        state.right_trigger = static_cast<std::uint8_t>(std::max<int>(0, axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) * 255 / 32767);
-        return state;
+        if (!controller_) return {};
+        return lunaone::desktop::ReadControllerState(controller_);
     }
+
+    // The labels printed on the pad read last. Controller thread only.
+    ControllerFamily Family() const { return family_; }
 
   private:
     static void RenderAudio(void* userdata, Uint8* bytes, int length)
@@ -286,6 +301,7 @@ class AudioAndInput
     }
 
     SDL_GameController* controller_{};
+    ControllerFamily family_ = ControllerFamily::Xbox;
     const int volume_;
     lunanx::audio::PcmBuffer buffer_;
     SDL_AudioDeviceID audio_{};
@@ -296,7 +312,8 @@ class AudioAndInput
     bool unpaused_ = false;
 };
 
-std::string Network()
+#if !defined(__FreeBSD__)
+std::string NetworkLabel()
 {
     std::ifstream routes("/proc/net/route");
     std::string name, destination, line;
@@ -318,7 +335,7 @@ std::string Network()
     return {};
 }
 
-int Battery()
+int BatteryPercent()
 {
     std::error_code error;
     auto entries = std::filesystem::directory_iterator("/sys/class/power_supply", error);
@@ -333,6 +350,7 @@ int Battery()
     }
     return -1;
 }
+#endif
 
 struct Presentation
 {
@@ -354,6 +372,8 @@ struct Presentation
     // to it: 1 for A (Oui), 2 for B (Non, or the question when none is shown).
     GtkWidget* confirm = nullptr;
     std::atomic<int> launch_answer{0};
+    // The labels of the pad in hand, for that question.
+    std::atomic<ControllerFamily> family{ControllerFamily::Xbox};
 };
 
 // « Oui » leaves, « Non » (the default) stays on the launch screen.
@@ -364,7 +384,8 @@ void ConfirmCancel(Presentation& player)
         static_cast<GtkDialogFlags>(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT), GTK_MESSAGE_QUESTION,
         GTK_BUTTONS_NONE, "%s", lunanx::Tr("Annuler le lancement du jeu").c_str());
     gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "%s",
-        (lunanx::Tr("Êtes-vous sûr ?") + "\n\n" + lunanx::TrFormat("{} : Oui    {} : Non", {"A", "B"})).c_str());
+        (lunanx::Tr("Êtes-vous sûr ?") + "\n\n" + lunanx::TrFormat("{} : Oui    {} : Non",
+            {PadButtonName(player.family, PadButton::A), PadButtonName(player.family, PadButton::B)})).c_str());
     gtk_dialog_add_button(GTK_DIALOG(dialog), lunanx::Tr("Non").c_str(), GTK_RESPONSE_NO);
     gtk_dialog_add_button(GTK_DIALOG(dialog), lunanx::Tr("Oui").c_str(), GTK_RESPONSE_YES);
     gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_NO);
@@ -394,21 +415,27 @@ void Play(GtkWindow* parent, const lunanx::luna::LunaClient& client, lunanx::lun
     gtk_window_set_title(GTK_WINDOW(window), ("LunaONE · " + game.title).c_str());
     gtk_window_set_default_size(GTK_WINDOW(window), 1024, 576);
     gtk_window_set_transient_for(GTK_WINDOW(window), parent);
-    gtk_window_set_modal(GTK_WINDOW(window), TRUE);
+    // Not modal: GNOME turns a modal window into a dialog, which cannot go
+    // full screen. The library ignores the mouse and keyboard until the game ends.
+    gtk_widget_set_sensitive(GTK_WIDGET(parent), FALSE);
+    struct Library
+    {
+        GtkWindow* window;
+        ~Library()
+        {
+            gtk_widget_set_sensitive(GTK_WIDGET(window), TRUE);
+            gtk_window_present(window);
+        }
+    } library{parent};
     auto overlay = gtk_overlay_new();
     gtk_container_add(GTK_CONTAINER(window), overlay);
     auto canvas = gtk_drawing_area_new();
     gtk_container_add(GTK_CONTAINER(overlay), canvas);
-    auto logo_path = std::unique_ptr<gchar, decltype(&g_free)>(g_file_read_link("/proc/self/exe", nullptr), &g_free);
     auto logo = gtk_image_new_from_icon_name("lunaone", GTK_ICON_SIZE_DIALOG);
-    if (logo_path)
+    if (auto image = gdk_pixbuf_new_from_file_at_scale(LogoPath().c_str(), 46, 46, TRUE, nullptr))
     {
-        const auto path = std::filesystem::path(logo_path.get()).parent_path() / "LunaONE.png";
-        if (auto image = gdk_pixbuf_new_from_file_at_scale(path.c_str(), 46, 46, TRUE, nullptr))
-        {
-            gtk_image_set_from_pixbuf(GTK_IMAGE(logo), image);
-            g_object_unref(image);
-        }
+        gtk_image_set_from_pixbuf(GTK_IMAGE(logo), image);
+        g_object_unref(image);
     }
     gtk_widget_set_halign(logo, GTK_ALIGN_START);
     gtk_widget_set_valign(logo, GTK_ALIGN_START);
@@ -436,8 +463,8 @@ void Play(GtkWindow* parent, const lunanx::luna::LunaClient& client, lunanx::lun
         gtk_widget_set_opacity(progress[i], i == 0 ? 1 : .25);
         gtk_box_pack_start(GTK_BOX(progress_row), progress[i], FALSE, FALSE, 0);
     }
-    std::jthread artwork([&status_mutex, &launch_cover,
-        url = game.image_portrait.empty() ? game.image_landscape : game.image_portrait] {
+    ScopedThread artwork([&status_mutex, &launch_cover,
+        url = game.image_portrait.empty() ? game.image_landscape : game.image_portrait](const std::atomic<bool>&) {
         try
         {
             if (auto downloaded = Artwork(url, 146, 192))
@@ -501,6 +528,15 @@ void Play(GtkWindow* parent, const lunanx::luna::LunaClient& client, lunanx::lun
         gtk_widget_destroy(widget);
         return TRUE;
     })), nullptr);
+    g_signal_connect(window, "window-state-event", G_CALLBACK((+[](GtkWidget* widget, GdkEventWindowState* event, gpointer) -> gboolean {
+        if (!MaximizeRequested(event)) return FALSE;
+        gtk_window_unmaximize(GTK_WINDOW(widget));
+        gtk_window_fullscreen(GTK_WINDOW(widget));
+        auto preferences = lunanx::LoadPlaybackPreferences();
+        preferences.fullscreen = true;
+        lunanx::SavePlaybackPreferences(preferences);
+        return FALSE;
+    })), nullptr);
     if (settings.fullscreen) gtk_window_fullscreen(GTK_WINDOW(window));
     g_signal_connect(canvas, "draw", G_CALLBACK((+[](GtkWidget* widget, cairo_t* cr, gpointer data) -> gboolean {
         auto& player = *static_cast<Presentation*>(data);
@@ -526,9 +562,9 @@ void Play(GtkWindow* parent, const lunanx::luna::LunaClient& client, lunanx::lun
     // SDL offers no change callback for controller state. Read it on a thread
     // of its own every 2 ms rather than from the GTK timer, which also draws.
     // Declared after the session and SDL owner so that it stops before them.
-    std::jthread controller([&input, &session, &state, &exit_requested](std::stop_token stop) {
+    ScopedThread controller([&input, &session, &state, &exit_requested](const std::atomic<bool>& stop) {
         std::uint32_t previous = 0;
-        while (!stop.stop_requested())
+        while (!stop)
         {
             const auto pad = input.Read();
             const std::uint32_t pressed = pad.buttons & ~previous;
@@ -542,6 +578,7 @@ void Play(GtkWindow* parent, const lunanx::luna::LunaClient& client, lunanx::lun
             // and B Non. The GTK timer acts on it.
             if (state.launching.load() && (pressed & (lunanx::input::kA | lunanx::input::kB)))
                 state.launch_answer = (pressed & lunanx::input::kA) ? 1 : 2;
+            state.family = input.Family();
             session.SetGamepad(state.overlay.Update(pad));
             std::this_thread::sleep_for(2ms);
         }
@@ -613,7 +650,7 @@ void Play(GtkWindow* parent, const lunanx::luna::LunaClient& client, lunanx::lun
         }
         if (player.overlay.Visible() && (!gtk_widget_get_visible(player.hud) || now >= player.hud_at))
         {
-            gtk_label_set_text(GTK_LABEL(player.hud), player.overlay.Format(Network(), Battery(), player.frame ? player.frame->height : 0).c_str());
+            gtk_label_set_text(GTK_LABEL(player.hud), player.overlay.Format(NetworkLabel(), BatteryPercent(), player.frame ? player.frame->height : 0).c_str());
             player.hud_at = now + 1s;
         }
         gtk_widget_set_visible(player.hud, player.overlay.Visible());
@@ -621,8 +658,7 @@ void Play(GtkWindow* parent, const lunanx::luna::LunaClient& client, lunanx::lun
     }, &timer_data);
     gtk_main();
     g_source_remove(timer);
-    controller.request_stop();
-    controller.join();
+    controller.Stop();
     if (state.window)
     {
         g_signal_handler_disconnect(state.window, on_close);

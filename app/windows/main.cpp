@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // LunaONE for Windows: the shared Google TV library (ui/library_scene) drawn
-// with Direct2D and DirectWrite, driven by the mouse, the keyboard or an
-// XInput controller. Playback is lunaone::windows::Play.
+// with Direct2D and DirectWrite, driven by the mouse, the keyboard or a
+// controller read through SDL2. Playback is lunaone::windows::Play.
 #include "../desktop/runtime.hpp"
+#include "../desktop/sdl_controllers.hpp"
+#include "fullscreen.hpp"
 #include "player.hpp"
 #include "core/http_client.hpp"
 #include "core/i18n.hpp"
@@ -18,7 +20,6 @@
 #include <wincodec.h>
 #include <windowsx.h>
 #include <wrl/client.h>
-#include <xinput.h>
 
 #include <algorithm>
 #include <condition_variable>
@@ -26,6 +27,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -79,48 +81,6 @@ std::string NetworkLabel()
     return {};
 }
 
-// XInput reader, loaded at run time as the player does.
-class Controllers
-{
-  public:
-    Controllers()
-    {
-        for (const wchar_t* name : {L"xinput1_4.dll", L"xinput9_1_0.dll"})
-            if ((library_ = LoadLibraryW(name)))
-                break;
-        if (library_) read_ = reinterpret_cast<decltype(read_)>(GetProcAddress(library_, "XInputGetState"));
-    }
-    ~Controllers()
-    {
-        if (library_) FreeLibrary(library_);
-    }
-
-    bool Read(lunanx::input::GamepadState& state)
-    {
-        if (!read_) return false;
-        for (DWORD index = 0; index < XUSER_MAX_COUNT; ++index)
-        {
-            XINPUT_STATE input {};
-            if (read_(index, &input) != ERROR_SUCCESS) continue;
-            const auto& pad = input.Gamepad;
-            // XInput buttons are the Luna masks.
-            state.buttons = pad.wButtons;
-            state.left_trigger = pad.bLeftTrigger;
-            state.right_trigger = pad.bRightTrigger;
-            state.left_x = pad.sThumbLX;
-            state.left_y = pad.sThumbLY;
-            state.right_x = pad.sThumbRX;
-            state.right_y = pad.sThumbRY;
-            return true;
-        }
-        return false;
-    }
-
-  private:
-    HMODULE library_ = nullptr;
-    DWORD(WINAPI* read_)(DWORD, XINPUT_STATE*) = nullptr;
-};
-
 class Desktop final : public lunanx::ui::SceneHost
 {
   public:
@@ -160,6 +120,7 @@ class Desktop final : public lunanx::ui::SceneHost
         ShowWindow(window_, show);
         if (lunanx::LoadPlaybackPreferences().fullscreen) SetFullscreen(true);
         ReportDisplay();
+        controllers_.emplace();
         images_ = std::thread([this] { LoadImages(); });
         SetTimer(window_, 1, 16, nullptr);
         scene_.Start();
@@ -219,34 +180,24 @@ class Desktop final : public lunanx::ui::SceneHost
 
     void Play(const lunanx::luna::LunaClient& client, const lunanx::luna::Game& game) override
     {
+        // The player reads the controllers on a thread of its own, and SDL
+        // serves one thread at a time: the library lends them for the game.
+        controllers_.reset();
+        struct Reopen
+        {
+            Desktop* self;
+            ~Reopen() { self->controllers_.emplace(); }
+        } reopen{this};
         lunaone::windows::Play(window_, client, game);
         SetForegroundWindow(window_);
     }
 
     bool Fullscreen() override { return fullscreen_; }
 
-    // Borderless full screen: a popup window over the monitor, which keeps its mode.
     void SetFullscreen(bool fullscreen) override
     {
         if (fullscreen == fullscreen_) return;
-        if (fullscreen)
-        {
-            placement_.length = sizeof(placement_);
-            GetWindowPlacement(window_, &placement_);
-            MONITORINFO monitor {sizeof(monitor)};
-            GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor);
-            SetWindowLongPtrW(window_, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-            SetWindowPos(window_, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
-                         monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
-                         SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
-        }
-        else
-        {
-            SetWindowLongPtrW(window_, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
-            SetWindowPlacement(window_, &placement_);
-            SetWindowPos(window_, nullptr, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-        }
+        lunaone::windows::SetBorderlessFullscreen(window_, fullscreen, placement_);
         fullscreen_ = fullscreen;
         Redraw();
     }
@@ -326,6 +277,13 @@ class Desktop final : public lunanx::ui::SceneHost
             case WM_MOUSEHWHEEL:
                 self->scene_.Wheel(-GET_WHEEL_DELTA_WPARAM(wparam) / 3.f, 0);
                 return 0;
+            case WM_SYSCOMMAND:
+                if (lunaone::windows::IsMaximizeCommand(wparam))
+                {
+                    if (!self->fullscreen_) self->scene_.ToggleFullscreen();
+                    return 0;
+                }
+                break;
             case WM_SYSKEYDOWN:
                 // Alt + Enter switches full screen, as in Windows games.
                 if (wparam == VK_RETURN)
@@ -391,9 +349,11 @@ class Desktop final : public lunanx::ui::SceneHost
 
     void Tick()
     {
+        // Read even in the background, so that connections and disconnections
+        // are seen; act only while the library is in front.
         lunanx::input::GamepadState pad;
-        if (GetForegroundWindow() == window_ && controllers_.Read(pad))
-            scene_.Gamepad(&pad, lunanx::input::ControllerFamily::Xbox);
+        if (controllers_ && controllers_->Read(pad) && GetForegroundWindow() == window_)
+            scene_.Gamepad(&pad, controllers_->Family());
         else
             scene_.Gamepad(nullptr, lunanx::input::ControllerFamily::Xbox);
         const auto now = std::chrono::steady_clock::now();
@@ -679,7 +639,7 @@ class Desktop final : public lunanx::ui::SceneHost
     std::thread images_;
     std::mutex tasks_mutex_;
     std::deque<std::function<void()>> tasks_;
-    Controllers controllers_;
+    std::optional<lunaone::desktop::SdlControllers> controllers_;
     std::chrono::steady_clock::time_point next_clock_ {};
 };
 } // namespace

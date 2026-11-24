@@ -33,7 +33,7 @@
 #elif defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <pthread.h>
-#else
+#elif defined(__linux__)
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -111,7 +111,7 @@ class RealtimeNetworkThread
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 #elif defined(__APPLE__)
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-#else
+#elif defined(__linux__)
         // Best effort: Android permits it, desktop Linux may refuse without RLIMIT_NICE.
         setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), -10);
 #endif

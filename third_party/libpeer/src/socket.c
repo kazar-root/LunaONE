@@ -72,8 +72,17 @@ int udp_socket_open(UdpSocket* udp_socket, int family, int port) {
   }
 
   do {
-    if (setsockopt(udp_socket->fd, SOL_SOCKET, SO_RCVBUF,
-                   (const char*)&receive_buffer, sizeof(receive_buffer)) < 0) {
+    int buffer_status = setsockopt(udp_socket->fd, SOL_SOCKET, SO_RCVBUF,
+                                   (const char*)&receive_buffer, sizeof(receive_buffer));
+#if defined(__FreeBSD__)
+    // FreeBSD includes mbuf overhead in its socket buffer limit.
+    while (buffer_status < 0 && errno == ENOBUFS && receive_buffer > 256 * 1024) {
+      receive_buffer /= 2;
+      buffer_status = setsockopt(udp_socket->fd, SOL_SOCKET, SO_RCVBUF,
+                                 (const char*)&receive_buffer, sizeof(receive_buffer));
+    }
+#endif
+    if (buffer_status < 0) {
       LOGW("Failed to enlarge UDP receive buffer: %d", peer_socket_error());
     } else {
       PeerSocketLength option_size = sizeof(receive_buffer);

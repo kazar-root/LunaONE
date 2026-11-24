@@ -119,7 +119,7 @@ int main()
     scene.Navigate(ui::Move::Left, ui::InputDevice::Keyboard);
     for (int i = 0; i < 4; ++i) scene.Navigate(ui::Move::Down, ui::InputDevice::Keyboard);
     paints = scene.Draw(1280, 720);
-    assert(HasText(paints, "À propos") && HasText(paints, "LunaONE  V0.1") &&
+    assert(HasText(paints, "À propos") && HasText(paints, "LunaONE  V0.2") &&
            HasText(paints, "Projet non affilié à Amazon ni à Amazon Luna."));
     assert(scene.Escape() && !scene.SettingsOpen());
     // Back down from the icons to the covers.

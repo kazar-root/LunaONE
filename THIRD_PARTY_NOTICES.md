@@ -13,5 +13,6 @@ LunaCore is based on LunaNX 3.1 by KazaR-RooT. The contribution notices and orig
 | libSRTP 2.7.0 | SRTP protection | BSD-3-Clause. [License](licenses/libSRTP-2.7.0.txt) |
 | qrcodegen | Local Amazon sign-in QR rendering | MIT. Reused from the original LunaNX 3.1 source. [License](licenses/qrcodegen-MIT.txt) |
 | Opus 1.6.1 | Audio decoding | BSD-3-Clause. [License](licenses/Opus-1.6.1.txt) |
+| SDL 2.32.10 | Controllers on Windows (Xbox, PlayStation, Nintendo, 8BitDo; USB and Bluetooth), statically linked. Linux and FreeBSD use the system SDL2 for audio and controllers | zlib. Original source archive in `third_party/sdl2/`. [License](licenses/SDL2-zlib.txt) |
 
 The LunaNX Switch binary has additional notices for Borealis, Moonlight-Switch, FFmpeg, libnx, deko3d and other components. Use the original notice list when bringing over their code or runtime dependencies.

@@ -1,4 +1,4 @@
-# LunaONE on Linux and Windows
+# LunaONE on Linux, FreeBSD and Windows
 
 The desktop CLI supports Amazon device sign-in, catalog exploration, and Luna search. `catalog` displays the initial shelves. `catalog --all` adds titles from linked collections and removes duplicates. `search` queries the authenticated Luna catalog and prints the ASIN when available.
 
@@ -16,15 +16,44 @@ ctest --preset linux
 ./build/linux/lunacore catalog --all
 ```
 
-The local ARM64 archive targets Alpine 3.23 and uses musl. On Alpine, install `gtk+3.0 sdl2 ffmpeg-libs libcurl font-dejavu` before opening the app. Use the Linux preset to build against another distribution's libraries.
+The `LunaONE-V0.2-Linux-Alpine-arm64.tar.gz` archive targets Alpine 3.23 and uses musl. On Alpine, install `gtk+3.0 sdl2 ffmpeg-libs libcurl font-dejavu` before opening the app. Use the Linux preset to build against another distribution's libraries.
+
+## FreeBSD
+
+The FreeBSD client uses GTK 3 for the catalog, the shared WebRTC engine, FFmpeg for H.264 video, and SDL2 for audio and controllers. The release offers `LunaONE-V0.2-FreeBSD-amd64.tar.gz` and `LunaONE-V0.2-FreeBSD-aarch64.tar.gz` for FreeBSD 14.4, 14.5, 15.0 and 15.1. You can validate the first Amazon sign-in by scanning the QR code with a phone. Browse the catalog and launch games from LunaONE in your FreeBSD graphical session.
+
+Install the build and runtime dependencies with `pkg` as root.
+
+```sh
+pkg install cmake ninja pkgconf curl gtk3 ffmpeg sdl2 dejavu
+```
+
+From the source directory, run these commands as your desktop user.
+
+```sh
+cmake --preset freebsd
+cmake --build --preset freebsd
+ctest --preset freebsd
+./build/freebsd/LunaONE
+```
+
+To make a binary archive for the build's FreeBSD architecture, run `cpack --config build/freebsd/CPackConfig.cmake -B build/freebsd`. On the target system, install `curl gtk3 ffmpeg sdl2 dejavu` with `pkg`, extract the archive and run `./LunaONE` from the extracted directory.
+
+### Archives for other FreeBSD releases
+
+LunaONE uses the system's libc++, which only gains functions over time. Build a published archive against the oldest supported release: it then runs on every newer one. FreeBSD 14.4, 15.0 and 15.1 ship libc++ 19, and 14.5 ships libc++ 21. An archive built on 14.5 stops on 15.1 with `ld-elf.so.1: Undefined symbol "_ZNSt3__113__hash_memoryEPKvm"`. Build on FreeBSD 14.4, or cross-build with `cmake/FreeBSD-cross.cmake` and a FreeBSD 14.4 sysroot. The sysroot holds the release's `base.txz` and the `curl gtk3 ffmpeg sdl2 xorgproto` packages, with their dependencies, from the `FreeBSD:14` repository. The file's header gives the commands.
+
+The first FreeBSD archives were built on 14.5 and failed on 15.1 this way. Their 14.5 builds had passed all 13 CTest tests and opened their GTK windows in virtual machines. The ARM64 build had also passed IPv4 and IPv6 UDP loopback checks and decoded a local H.264 frame.
+
+The current archives were cross-built from a FreeBSD 14.4 sysroot with clang and lld 21. Each dynamic symbol of `LunaONE` and `lunaone` was checked against the libraries of FreeBSD 14.4, 14.5, 15.0 and 15.1. All of them resolve for amd64 and aarch64. The same check finds the missing `__hash_memory` in the first archives on 14.4, 15.0 and 15.1. These archives have not run on FreeBSD yet. Live Luna playback and physical controller input also still need testing on FreeBSD.
 
 ## Windows
 
-Extract `LunaONE-Windows-x64.zip` for an Intel or AMD PC, or `LunaONE-Windows-arm64.zip` for a Windows ARM PC. Keep the files in the extracted folder together and double-click `LunaONE.exe`.
+Extract `LunaONE-V0.2-Windows-x64.zip` for an Intel or AMD PC, or `LunaONE-V0.2-Windows-arm64.zip` for a Windows ARM PC. Keep the files in the extracted folder together and double-click `LunaONE.exe`, the only program in the archive. The command-line client `LunaONE-cli.exe` comes from a source build.
 
 Choose the country for your Amazon account, create a code and scan the QR to open the Amazon confirmation page. Return to LunaONE after confirming. The window loads the catalog, searches Luna by title and can explore linked collections for more titles. Use **Se déconnecter** to remove the saved account from the PC.
 
-To start a stream, select a title and click **Jouer**, double-click the title, or press Enter with the title selected. The Windows player uses the shared WebRTC engine, Media Foundation H.264 decoding, Opus audio and an XInput controller. Playback diagnostics are written to `runtime.log` in the app’s local data directory.
+To start a stream, select a title and click **Jouer**, double-click the title, or press Enter with the title selected. The Windows player uses the shared WebRTC engine, Media Foundation H.264 decoding, Opus audio and the controllers read through SDL2. Playback diagnostics are written to `runtime.log` in the app’s local data directory.
 
 Use an x64 or ARM64 compiler environment with CMake 3.25 or newer, Ninja and libcurl for the same architecture. If libcurl comes from vcpkg, pass its CMake toolchain file to the configure command.
 
@@ -37,13 +66,13 @@ ctest --preset windows
 .\build\windows\LunaONE-cli.exe search "Alan Wake 2"
 ```
 
-The local cross-build directories under `build/desktop` contain the x64 and ARM64 executables and their runtime DLLs. Keep the executable beside those DLLs. The tests that run executables need the same DLLs on `PATH` or beside the test binaries.
+The local cross-build directories under `build/desktop` contain the x64 and ARM64 executables, their runtime DLLs and `LunaONE.png`, the logo shown by the library. Keep the executable beside those files. The tests that run executables need the same DLLs on `PATH` or beside the test binaries.
 
-Open `LunaONE-CLI.cmd` to display the CLI help and keep the console open. In PowerShell, run `.\LunaONE-cli.exe --version` from the folder containing the executable and DLLs to check that the CLI starts.
+In a source build, open `LunaONE-CLI.cmd` to display the CLI help and keep the console open. In PowerShell, run `.\LunaONE-cli.exe --version` from the build folder to check that the CLI starts.
 
 ## Library and controls
 
-The Windows and Linux windows show the Google TV library. The layout, panels, settings and on-screen keyboard live in `app/src/ui/library_scene.cpp`; Windows draws them with Direct2D and DirectWrite, Linux with Cairo and Pango. The Mac client draws the same screen with AppKit.
+The Windows, Linux and FreeBSD windows show the Google TV library. The layout, panels, settings and on-screen keyboard live in `app/src/ui/library_scene.cpp`. Windows draws them with Direct2D and DirectWrite, and the GTK client uses Cairo and Pango. The Mac client draws the same screen with AppKit.
 
 | Action | Mouse and keyboard | Controller |
 | --- | --- | --- |
@@ -53,12 +82,14 @@ The Windows and Linux windows show the Google TV library. The layout, panels, se
 | Section (Top 10, Reprendre, Tous les jeux) | Click the section icons | LB or RB, pressed alone |
 | Cancel a game launch | Click **Annuler le lancement du jeu**, then **Oui** | B |
 | Search keyboard | Type in the field | LB + LT + RB + RT (L1 + L2 + R1 + R2) |
-| Full screen | F11 (Alt + Enter on Windows, ⌃⌘F on Mac); Esc returns to the window | |
+| Full screen | F11 (Alt + Enter on Windows, ⌃⌘F on Mac) or the maximize button of the title bar; Esc returns to the window | |
 | Leave a game | Close the game window; Esc in a window | LS + RS + RB (L3 + R3 + R1) |
+
+Controllers connect over USB or Bluetooth. Windows, Linux and FreeBSD read them through SDL2. Windows links SDL 2.32.10 statically from `third_party/sdl2`, and Linux and FreeBSD use the system's SDL2. SDL recognizes Xbox pads, PlayStation DualShock 4 and DualSense, Nintendo Pro Controllers and Joy-Con, and 8BitDo pads. 8BitDo pads work in X-input mode like an Xbox pad, in Switch mode like a Pro Controller, and in D-input mode through SDL's mappings for 17 models. A, B, X and Y follow the button positions, as on the Mac: the bottom button is A, even where a Nintendo or 8BitDo pad prints B on it. The hints show the labels printed on the pad in hand. The keyboard, the mouse and the on-screen keyboard drive the library before a game starts, for example to search for a game. In a game session, only the controller reaches Luna. There, the keyboard and mouse only switch full screen and leave the game. Keyboard and mouse input in game is in progress.
 
 **Profil de qualité** in Réglages › Général sets the H.264 profile, picture and sound together: Faible (Baseline, 720p 30 FPS), Moyen (Main, 720p 60 FPS), Élevé (High, 1080p 60 FPS), Ultra (High, 1080p 60 FPS, full-rate audio), Automatique (follows the screen) or Personnalisé (the rows of Réglages avancés). Luna's server has so far always answered with Constrained Baseline. Transport-wide arrival feedback stays on the Mac only: on the Google TV over Wi-Fi it raised losses and picture delay without raising the bitrate.
 
-Full screen is borderless and keeps the display mode. The choice is saved and applies to the library and to games. Hints and settings name the buttons as printed on the controller in use: Xbox, PlayStation or Nintendo.
+Full screen is borderless and keeps the display mode. On Windows the taskbar goes below the window. As with the Mac's green button, the maximize button opens full screen rather than a maximized window. On Linux the game window is not modal, because GNOME does not let a modal window go full screen. The choice is saved and applies to the library and to games. Hints and settings name the buttons as printed on the controller in use: Xbox, PlayStation or Nintendo.
 
 ## LunaCore validation on 2026-11-19
 
@@ -83,3 +114,14 @@ The Linux media test verified reception and decoding. A desktop window, audio ou
 | Shared library | The `library_scene` test drives the library without a window or network: controller navigation and paging, PlayStation button names, the keyboard chord, typing and deleting, Esc, Enter to play and full screen. |
 | Linux | The Alpine ARM64 build passed all 12 CTest suites. Headless renders of the sign-in screen and of a demo catalog matched the Google TV layout, with covers and backdrop. |
 | Windows | LLVM-MinGW linked the x64 GUI with Direct2D and DirectWrite. It still needs a test on a Windows PC. |
+
+## LunaONE validation on 2026-11-24
+
+| Check | Result |
+| --- | --- |
+| Windows controllers | LLVM-MinGW built the x64 and ARM64 apps with SDL 2.32.10 linked statically, with its XInput, DirectInput, RawInput, Windows.Gaming.Input and HIDAPI drivers. The executables need only system DLLs besides the ones already packaged. PlayStation, Nintendo and 8BitDo pads still need a test on a Windows PC, over USB and Bluetooth. |
+| Linux | The Alpine ARM64 build with the shared SDL controller code passed all 13 CTest suites. |
+| macOS | The universal V0.2 app passed all 13 CTest suites. |
+| Android | The V0.2 APK has version code 11 and the V0.1 signing certificate, so it installs over V0.1. |
+| iPhone and iPad | Xcode's asset catalog compiler needs an iOS Simulator runtime, which this Mac lacks. The V0.2 IPA was built without the catalog and carries the V0.1 icons, which have not changed. |
+| FreeBSD | The amd64 and aarch64 archives were rebuilt from the FreeBSD 14.4 sysroot. Every dynamic symbol resolves. The only new ones come from SDL2 2.32.10, which the FreeBSD 14 and 15 repositories both ship. |

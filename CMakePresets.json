@@ -59,6 +59,14 @@
       "cacheVariables": { "LUNACORE_BUILD_LINUX_APP": "ON" }
     },
     {
+      "name": "freebsd",
+      "displayName": "FreeBSD native app and CLI with Ninja",
+      "inherits": "desktop-cli",
+      "binaryDir": "${sourceDir}/build/freebsd",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "FreeBSD" },
+      "cacheVariables": { "LUNACORE_BUILD_FREEBSD_APP": "ON" }
+    },
+    {
       "name": "windows",
       "displayName": "Windows native app and CLI with Ninja",
       "inherits": "desktop-cli",
@@ -72,6 +80,7 @@
     { "name": "ipados", "configurePreset": "ipados", "configuration": "RelWithDebInfo", "targets": ["LunaONE-iOS"] },
     { "name": "ipados-simulator", "configurePreset": "ipados-simulator", "configuration": "Debug", "targets": ["LunaONE-iOS"] },
     { "name": "linux", "configurePreset": "linux" },
+    { "name": "freebsd", "configurePreset": "freebsd" },
     { "name": "windows", "configurePreset": "windows" }
   ],
   "testPresets": [
@@ -88,6 +97,7 @@
       "output": { "outputOnFailure": true }
     },
     { "name": "linux", "configurePreset": "linux", "output": { "outputOnFailure": true } },
+    { "name": "freebsd", "configurePreset": "freebsd", "output": { "outputOnFailure": true } },
     { "name": "windows", "configurePreset": "windows", "output": { "outputOnFailure": true } }
   ]
 }

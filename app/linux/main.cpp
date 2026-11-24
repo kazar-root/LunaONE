@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// LunaONE for Linux: the shared Google TV library (ui/library_scene) drawn
+// LunaONE for Linux and FreeBSD: the shared Google TV library (ui/library_scene) drawn
 // with Cairo and Pango in a GTK window, driven by the mouse, the keyboard or a
 // controller read through SDL. Playback is lunaone::linux_desktop::Play.
+#include "fullscreen.hpp"
+#include "platform.hpp"
 #include "player.hpp"
 #include "../desktop/runtime.hpp"
+#include "../desktop/sdl_controllers.hpp"
 #include "core/http_client.hpp"
 #include "core/i18n.hpp"
 #include "core/playback_preferences.hpp"
@@ -55,12 +58,12 @@ void RoundedPath(cairo_t* cr, double x, double y, double w, double h, double r)
     cairo_close_path(cr);
 }
 
-std::filesystem::path ExecutableDirectory()
-{
-    std::error_code error;
-    return std::filesystem::read_symlink("/proc/self/exe", error).parent_path();
-}
+using lunaone::linux_desktop::LogoPath;
 
+#if defined(__FreeBSD__)
+using lunaone::linux_desktop::BatteryPercent;
+using lunaone::linux_desktop::NetworkLabel;
+#else
 // "Wi-Fi" or "LAN" for the interface of the default route.
 std::string NetworkLabel()
 {
@@ -89,6 +92,7 @@ int BatteryPercent()
         }
     return -1;
 }
+#endif
 
 class Desktop final : public lunanx::ui::SceneHost
 {
@@ -112,7 +116,7 @@ class Desktop final : public lunanx::ui::SceneHost
         gtk_window_set_title(GTK_WINDOW(window_), "LunaONE");
         gtk_window_set_default_size(GTK_WINDOW(window_), 1280, 720);
         gtk_window_set_icon_name(GTK_WINDOW(window_), "lunaone");
-        gtk_window_set_icon_from_file(GTK_WINDOW(window_), (ExecutableDirectory() / "LunaONE.png").c_str(), nullptr);
+        gtk_window_set_icon_from_file(GTK_WINDOW(window_), LogoPath().c_str(), nullptr);
         g_signal_connect(window_, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
         area_ = gtk_drawing_area_new();
         gtk_widget_set_can_focus(area_, TRUE);
@@ -149,9 +153,15 @@ class Desktop final : public lunanx::ui::SceneHost
         g_signal_connect(window_, "key-press-event", G_CALLBACK((+[](GtkWidget*, GdkEventKey* event, gpointer self) -> gboolean {
             return static_cast<Desktop*>(self)->Key(event);
         })), this);
-        g_signal_connect(window_, "window-state-event", G_CALLBACK((+[](GtkWidget*, GdkEventWindowState* event, gpointer self) -> gboolean {
-            static_cast<Desktop*>(self)->fullscreen_ = (event->new_window_state & GDK_WINDOW_STATE_FULLSCREEN) != 0;
-            static_cast<Desktop*>(self)->Redraw();
+        g_signal_connect(window_, "window-state-event", G_CALLBACK((+[](GtkWidget* widget, GdkEventWindowState* event, gpointer data) -> gboolean {
+            auto& self = *static_cast<Desktop*>(data);
+            self.fullscreen_ = (event->new_window_state & GDK_WINDOW_STATE_FULLSCREEN) != 0;
+            if (lunaone::linux_desktop::MaximizeRequested(event))
+            {
+                gtk_window_unmaximize(GTK_WINDOW(widget));
+                self.scene_.ToggleFullscreen();
+            }
+            self.Redraw();
             return FALSE;
         })), this);
         // Controller, clock and animations: a 60 Hz tick.
@@ -205,7 +215,7 @@ class Desktop final : public lunanx::ui::SceneHost
         if (images_cache_.contains(address)) return images_cache_[address] != nullptr;
         if (address == "lunaone:logo")
         {
-            GdkPixbuf* logo = gdk_pixbuf_new_from_file((ExecutableDirectory() / "LunaONE.png").c_str(), nullptr);
+            GdkPixbuf* logo = gdk_pixbuf_new_from_file(LogoPath().c_str(), nullptr);
             images_cache_[address] = logo ? Pic(logo, g_object_unref) : nullptr;
             return logo != nullptr;
         }
@@ -229,7 +239,11 @@ class Desktop final : public lunanx::ui::SceneHost
         struct Reopen
         {
             Desktop* self;
-            ~Reopen() { self->OpenControllers(); }
+            ~Reopen()
+            {
+                self->OpenControllers();
+                gtk_widget_grab_focus(self->area_);
+            }
         } reopen{this};
         lunaone::linux_desktop::Play(GTK_WINDOW(window_), client, game);
     }
@@ -516,6 +530,7 @@ class Desktop final : public lunanx::ui::SceneHost
     void OpenControllers()
     {
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "0");
+        lunaone::desktop::SetControllerHints();
         if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0) std::cerr << "SDL: " << SDL_GetError() << '\n';
     }
 
@@ -530,30 +545,12 @@ class Desktop final : public lunanx::ui::SceneHost
         }
         if (!controller_)
             for (int i = 0; i < SDL_NumJoysticks() && !controller_; ++i)
-                if (SDL_IsGameController(i)) controller_ = SDL_GameControllerOpen(i);
+                if (SDL_IsGameController(i) && (controller_ = SDL_GameControllerOpen(i)))
+                    family_ = lunaone::desktop::ControllerFamilyOf(controller_);
         if (controller_ && gtk_window_is_active(GTK_WINDOW(window_)))
         {
-            using namespace lunanx::input;
-            GamepadState state;
-            const std::pair<SDL_GameControllerButton, std::uint16_t> buttons[] = {
-                {SDL_CONTROLLER_BUTTON_A, kA}, {SDL_CONTROLLER_BUTTON_B, kB}, {SDL_CONTROLLER_BUTTON_X, kX},
-                {SDL_CONTROLLER_BUTTON_Y, kY}, {SDL_CONTROLLER_BUTTON_DPAD_UP, kDpadUp},
-                {SDL_CONTROLLER_BUTTON_DPAD_DOWN, kDpadDown}, {SDL_CONTROLLER_BUTTON_DPAD_LEFT, kDpadLeft},
-                {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, kDpadRight}, {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, kLeftShoulder},
-                {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, kRightShoulder}, {SDL_CONTROLLER_BUTTON_START, kStart},
-                {SDL_CONTROLLER_BUTTON_BACK, kBack}};
-            for (const auto& [button, mask] : buttons)
-                if (SDL_GameControllerGetButton(controller_, button)) state.buttons |= mask;
-            const auto axis = [this](SDL_GameControllerAxis id) { return SDL_GameControllerGetAxis(controller_, id); };
-            state.left_x = axis(SDL_CONTROLLER_AXIS_LEFTX);
-            state.left_y = static_cast<std::int16_t>(-std::max<int>(axis(SDL_CONTROLLER_AXIS_LEFTY), -32767));
-            state.left_trigger = static_cast<std::uint8_t>(std::max<int>(0, axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT)) * 255 / 32767);
-            state.right_trigger = static_cast<std::uint8_t>(std::max<int>(0, axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) * 255 / 32767);
-            const auto type = SDL_GameControllerGetType(controller_);
-            const auto family = type == SDL_CONTROLLER_TYPE_PS3 || type == SDL_CONTROLLER_TYPE_PS4 || type == SDL_CONTROLLER_TYPE_PS5
-                ? ControllerFamily::PlayStation
-                : type == SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO ? ControllerFamily::Nintendo : ControllerFamily::Xbox;
-            scene_.Gamepad(&state, family);
+            const auto state = lunaone::desktop::ReadControllerState(controller_);
+            scene_.Gamepad(&state, family_);
         }
         else scene_.Gamepad(nullptr, lunanx::input::ControllerFamily::Xbox);
         const auto now = std::chrono::steady_clock::now();
@@ -621,6 +618,7 @@ class Desktop final : public lunanx::ui::SceneHost
     cairo_t* measure_ = nullptr;
     bool fullscreen_ = false;
     SDL_GameController* controller_ = nullptr;
+    lunanx::input::ControllerFamily family_ = lunanx::input::ControllerFamily::Xbox;
     std::chrono::steady_clock::time_point next_clock_ {};
     std::map<std::string, Pic> images_cache_;
     std::set<std::string> requested_;

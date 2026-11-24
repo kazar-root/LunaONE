@@ -6,12 +6,12 @@
 
 <p align="center">
   <strong>A native, open-source Amazon Luna cloud gaming client.</strong><br>
-  macOS · Windows · Linux · iPhone &amp; iPad · Android · Google TV
+  macOS · Windows · Linux · FreeBSD · iPhone &amp; iPad · Android · Google TV
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-7c4dff"></a>
-  <img alt="Version 0.1" src="https://img.shields.io/badge/version-0.1-aa88ff">
+  <img alt="Version 0.2" src="https://img.shields.io/badge/version-0.2-aa88ff">
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-5b3fd6">
 </p>
 
@@ -20,17 +20,25 @@
 
 ## Download
 
-Get **[LunaONE V0.1](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
+Get **[LunaONE V0.2](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, FreeBSD, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
 
 ## What is LunaONE?
 
-LunaONE lets you play your Amazon Luna games in a native app instead of a web browser. It is built for the couch: pick up a controller, browse the catalog, press A and play. The same app runs on your Mac, your PC, your Linux machine, your iPad, your Android phone and your Google TV.
+LunaONE lets you play your Amazon Luna games in a native app instead of a web browser. It is built for the couch: pick up a controller, browse the catalog, press A and play. The same app runs on your Mac, your PC, your Linux or FreeBSD machine, your iPad, your Android phone and your Google TV.
 
 LunaONE is a fork of my project **[LunaNX](https://github.com/kazar-root/LunaNX)**, the Amazon Luna client for the Nintendo Switch. LunaONE takes the LunaNX engine (Amazon sign-in, Luna catalog, game sessions, streaming and controller input), ports it to modern C++20 and brings it to every major platform with one shared code base.
 
 I hope LunaONE will please as many players as possible. Feedback, bug reports and contributions are very welcome!
 
 *— KazaR-RooT*
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/freebsd-indiana-jones.jpg" width="49%" alt="LunaONE on FreeBSD: the library and Indiana Jones and the Great Circle streaming in 1080p at 60 FPS">
+  <img src="docs/images/android-auto-wrc.jpg" width="49%" alt="LunaONE on the screen of a car with Android Auto, launching WRC Generations">
+</p>
+<p align="center"><sub>Left: FreeBSD, Indiana Jones and the Great Circle in 1080p at 60 FPS over a wired network. Right: Android Auto in a car, WRC Generations.</sub></p>
 
 ## Features
 
@@ -47,10 +55,10 @@ I hope LunaONE will please as many players as possible. Feedback, bug reports an
   | Ultra | High | 1080p, 60 FPS, high minimum bitrate, full-rate audio | Wired connection |
   | Custom | — | Resolution, frame rate, bitrate and mode set by hand | Tinkerers |
 
-- **Made for controllers.** Xbox, PlayStation and Nintendo controllers, with the button names of the controller in your hands. Swap A/B, swap X/Y and invert the left stick, in the menus and in game.
+- **Made for controllers.** Xbox, PlayStation, Nintendo and 8BitDo controllers, wired over USB or wireless over Bluetooth, with the button names of the controller in your hands. Swap A/B, swap X/Y and invert the left stick, in the menus and in game.
 - **Handy shortcuts.** L3 + R3 + R1 leaves a game. L1 + L2 + R1 + R2 opens the on-screen keyboard for search. L3 + R3 shows the technical overlay.
-- **Keyboard, mouse and TV remote** work everywhere too.
-- **Borderless full screen** on desktop (F11, Alt + Enter on Windows, Control + Command + F on Mac; Esc returns to the window).
+- **Keyboard, mouse and TV remote** work in the library, before the game starts: browse the catalog, open the settings, or search for a game with the keyboard or the on-screen keyboard. In a game session, LunaONE currently sends only the controller to Luna. Keyboard and mouse support in game is in progress.
+- **Borderless full screen** on desktop (F11, Alt + Enter on Windows, Control + Command + F on Mac, or the title bar's maximize button, like the Mac's green button; Esc returns to the window).
 - **11 interface languages**: English, French, German, Spanish, Italian, Portuguese, Russian, Chinese, Polish, Dutch and Swedish.
 - **Private by design.** No LunaONE server and no telemetry (see [Privacy](#privacy)).
 
@@ -59,8 +67,9 @@ I hope LunaONE will please as many players as possible. Feedback, bug reports an
 | Platform | Interface | Video | Audio | Controllers |
 | --- | --- | --- | --- | --- |
 | macOS 13+ (Apple Silicon and Intel) | AppKit | VideoToolbox, Metal | Audio Queue | GameController |
-| Windows 10/11 (x64 and ARM64) | Direct2D, DirectWrite | Media Foundation | waveOut | XInput |
+| Windows 10/11 (x64 and ARM64) | Direct2D, DirectWrite | Media Foundation | waveOut | SDL2 |
 | Linux | GTK 3, Cairo, Pango | FFmpeg | SDL2 | SDL2 |
+| FreeBSD 14.4+ and 15 (amd64 and ARM64) | GTK 3, Cairo, Pango | FFmpeg | SDL2 | SDL2 |
 | iPhone and iPad (iOS / iPadOS 17+) | UIKit | VideoToolbox | Audio Queue | GameController |
 | Android 8+ and Google TV | Android views | MediaCodec | AAudio | Android gamepads |
 | Apple Watch (watchOS 10+) | SwiftUI | Mirrored from the iPhone | — | A, B, Digital Crown |
@@ -83,7 +92,7 @@ flowchart LR
 2. **Catalog.** The app reads the same Luna pages as the official clients, follows their linked collections to build the complete catalog, and checks which games your plan includes.
 3. **Session.** When you press Play, LunaONE measures the Luna regions, picks the nearest one and asks Luna for a game session with a WebRTC offer that describes what it can decode. It shows the launch progress while the cloud machine starts. You can cancel the launch at any time.
 4. **Streaming.** The video and audio arrive over WebRTC: ICE connectivity, DTLS-SRTP encryption ([libpeer](https://github.com/sepfy/libpeer), [Mbed TLS](https://github.com/Mbed-TLS/mbedtls), [libSRTP](https://github.com/cisco/libsrtp)), retransmission of lost packets and a jitter buffer. H.264 pictures go to the platform's hardware decoder, and Opus audio goes to the platform's low-latency output.
-5. **Input.** The controller is read every 2 ms and encoded in Luna's input format (Xbox layout), then sent over the WebRTC data channel. Your button options (swap A/B, swap X/Y, invert Y) are applied before sending.
+5. **Input.** The controller is read every 2 ms and encoded in Luna's input format (Xbox layout), then sent over the WebRTC data channel. Your button options (swap A/B, swap X/Y, invert Y) are applied before sending. The keyboard and mouse are not sent to the game yet.
 6. **Quality.** The app tells Luna the resolution, frame rate and bitrate range it wants. Luna's servers adapt the stream within that range to your connection.
 
 ### Source layout
@@ -95,9 +104,9 @@ flowchart LR
 | `app/src/stream` | Audio buffering and video quality helpers |
 | `app/src/input` | Controller encoding and button names |
 | `app/src/core` | Settings, quality profiles, translations, storage, logs |
-| `app/src/ui` | Library interface shared by Windows and Linux, on-screen keyboard |
+| `app/src/ui` | Library interface shared by Windows, Linux and FreeBSD, on-screen keyboard |
 | `app/apple`, `app/ipados` | macOS and iPhone/iPad apps |
-| `app/windows`, `app/linux` | Windows and Linux apps |
+| `app/windows`, `app/linux` | Windows app, and the GTK app for Linux and FreeBSD |
 | `app/android` | Android and Google TV app |
 | `app/cli` | Command-line client |
 | `third_party` | libpeer, Mbed TLS, libSRTP, Opus, Jansson, QR Code generator |
@@ -125,6 +134,15 @@ ctest --preset linux
 ./build/linux/LunaONE
 ```
 
+**FreeBSD** (packages installed as root with `pkg install cmake ninja pkgconf curl gtk3 ffmpeg sdl2 dejavu`):
+
+```sh
+cmake --preset freebsd
+cmake --build --preset freebsd
+ctest --preset freebsd
+./build/freebsd/LunaONE
+```
+
 **Windows** (x64 or ARM64 toolchain, Ninja, libcurl):
 
 ```powershell
@@ -147,7 +165,7 @@ cmake --preset ipados -DLUNACORE_APPLE_TEAM_ID=YOUR_TEAM_ID
 open build/ipados/LunaONE.xcodeproj
 ```
 
-More details: [Windows and Linux](docs/DESKTOP.md) · [Android and Google TV](docs/ANDROID.md) · [iPhone and iPad](docs/IPADOS.md) · [macOS streaming](docs/MACOS-STREAMING.md) · [LunaNX source audit](docs/LUNANX-AUDIT.md)
+More details: [Windows, Linux and FreeBSD](docs/DESKTOP.md) · [Android and Google TV](docs/ANDROID.md) · [iPhone and iPad](docs/IPADOS.md) · [macOS streaming](docs/MACOS-STREAMING.md) · [LunaNX source audit](docs/LUNANX-AUDIT.md)
 
 ## Privacy
 

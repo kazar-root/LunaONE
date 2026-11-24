@@ -5,7 +5,7 @@
 <h1 align="center">LunaONE</h1>
 
 <p align="center">
-  <strong>A native, open-source Amazon Luna cloud gaming client.</strong><br>
+  <strong>The open-source Amazon Luna cloud gaming client: play Luna without a web browser.</strong><br>
   macOS · Windows · Linux · FreeBSD · iPhone &amp; iPad · Android · Google TV
 </p>
 
@@ -21,6 +21,8 @@
 ## Download
 
 Get **[LunaONE V0.2](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, FreeBSD, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
+
+Website: **[kazar-root.github.io/LunaONE](https://kazar-root.github.io/LunaONE/)**
 
 ## What is LunaONE?
 
@@ -75,6 +77,32 @@ I hope LunaONE will please as many players as possible. Feedback, bug reports an
 | Apple Watch (watchOS 10+) | SwiftUI | Mirrored from the iPhone | — | A, B, Digital Crown |
 
 macOS is the reference client. The other platforms share the same engine and are in active testing. On Apple Watch, the game runs on the paired iPhone and its picture is mirrored on the wrist ([how it works](docs/IPADOS.md#apple-watch-mirror)).
+
+## FAQ
+
+### Can I play Amazon Luna on Linux or FreeBSD?
+
+Yes. LunaONE is a native GTK app for Linux and FreeBSD, with FFmpeg for video and SDL2 for sound and controllers. The release has archives for Alpine Linux ARM64 and for FreeBSD 14.4, 14.5, 15.0 and 15.1 on amd64 and ARM64. Other Linux distributions can [build it from source](#building).
+
+### Can I use a PS5 DualSense, a PS4 DualShock 4, a Switch Pro Controller or an 8BitDo controller with Amazon Luna on Windows?
+
+Yes, over USB or Bluetooth, with no extra software. 8BitDo controllers work in X-input, Switch and D-input modes. LunaONE names the buttons as they are printed on the controller in your hands.
+
+### Does Amazon Luna work on Android TV, Google TV or in a car?
+
+The LunaONE APK runs on Android 8+ phones and tablets, on Google TV with the TV remote, and on the Android screen of a car (see the [screenshots](#screenshots)).
+
+### How do I play Amazon Luna on iPhone or iPad without Safari?
+
+Install the LunaONE IPA with [AltStore](https://altstore.io) or [Sideloadly](https://sideloadly.io) and your own Apple ID. An Apple Watch can mirror the game when you build the app from source.
+
+### Can I use a keyboard and mouse?
+
+In the library, yes: browse, open the settings or search for a game, also with the on-screen keyboard. In a game, LunaONE currently sends only the controller to Luna. Keyboard and mouse support in game is in progress.
+
+### Is LunaONE official? Do I need a Luna subscription?
+
+LunaONE is an independent open-source project, not affiliated with Amazon. You sign in with your own Amazon account and play the games your Luna plan includes.
 
 ## How it works
 

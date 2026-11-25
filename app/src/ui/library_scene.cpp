@@ -30,9 +30,13 @@ using luna::Game;
 constexpr std::uint32_t kBackground = 0xff100d1d, kText = 0xfffaf8ff, kSecondary = 0xffc7bdd4, kViolet = 0xffaa88ff,
                         kGreen = 0xff78e3bd, kInk = 0xff151125, kShell = 0xe818142b, kCard = 0xff2a2240,
                         kRank = 0xff6f42ea, kQuiet = 0x8dd8cce8, kRing = 0x867d718e, kPill = 0xfff0eaff;
-// MainActivity.java (sign-in screen) and TvUi.java colours.
-constexpr std::uint32_t kLoginBackground = 0xfff5f3fa, kLoginInk = 0xff211c34, kLoginMuted = 0xff625a78,
-                        kLoginAccent = 0xff4930b1, kFocus = 0xff5640bb, kPrimary = 0xff32217d;
+// The focus fill of the settings rows.
+constexpr std::uint32_t kFocus = 0xff5640bb;
+// The sign-in screen in the library's night colours, as on the Mac: frosted
+// cards on the logo's violet, violet buttons with a white ring on focus.
+constexpr std::uint32_t kLoginCard = 0x1fffffff, kLoginCardEdge = 0x40aa88ff, kLoginButton = 0xff6a4cff,
+                        kLoginButtonFocus = 0xff8466ff, kLoginSecondary = 0x1affffff,
+                        kLoginSecondaryFocus = 0x55aa88ff, kLoginOutline = 0x4dffffff;
 constexpr std::size_t kPageSize = 10;
 const char* const kSections[] = {"Top 10", "Reprendre", "Tous les jeux", "Luna Premium"};
 
@@ -185,7 +189,7 @@ void LibraryScene::ShowGames(std::shared_ptr<luna::LunaClient> client, std::vect
 
 Box LibraryScene::At(float x, float y, float w, float h) const
 {
-    return {x * scale_, offset_y_ + y * scale_, std::max(0.f, w * scale_), std::max(0.f, h * scale_)};
+    return {offset_x_ + x * scale_, offset_y_ + y * scale_, std::max(0.f, w * scale_), std::max(0.f, h * scale_)};
 }
 
 void LibraryScene::Rect(Box box, std::uint32_t color, float radius, float stroke, std::uint32_t stroke_color, float opacity)
@@ -258,11 +262,19 @@ std::vector<Paint> LibraryScene::Draw(float width, float height)
     scale_ = std::max(0.1f, std::min(width / 1280, height / 720));
     width_ = width / scale_;
     offset_y_ = (height - 720 * scale_) / 2;
+    offset_x_ = 0;
     login_count_ = 0;
-    const bool light = !client_ && !loading_;
-    Rect({0, 0, width, height}, light ? kLoginBackground : kBackground);
-    if (!light)
+    const bool signing_in = !client_ && !loading_;
+    if (signing_in)
     {
+        Paint backdrop;
+        backdrop.kind = Paint::Kind::Backdrop;
+        backdrop.box = {0, 0, width, height};
+        paints_.push_back(backdrop);
+    }
+    else
+    {
+        Rect({0, 0, width, height}, kBackground);
         // The selected game's artwork, cross-fading, under the shade.
         const auto now = Clock::now();
         if (!backdrop_wanted_.empty() && backdrop_wanted_ != backdrop_shown_ && now >= backdrop_due_ &&
@@ -318,59 +330,93 @@ void LibraryScene::LoginButton(float y, const std::string& title, bool primary, 
     const std::size_t index = login_count_++;
     const bool focused = device_ != InputDevice::Mouse && index == login_focus_;
     const auto box = At(x, y, w, 56);
-    Rect(box, primary ? (focused ? kFocus : kPrimary) : (focused ? 0xffe3dcff : 0xffffffff), 8,
-         focused ? 3 : (primary ? 0 : 1), focused ? (primary ? 0xffeeebff : kFocus) : 0x33211c34);
-    Label(box, title, 19, primary ? 0xffffffff : kLoginInk, Font::Bold, Align::Center);
+    Rect(box, primary ? (focused ? kLoginButtonFocus : kLoginButton) : (focused ? kLoginSecondaryFocus : kLoginSecondary),
+         12, focused ? 3 : (primary ? 0 : 1), focused ? (primary ? 0xffffffff : kViolet) : kLoginOutline);
+    Label(box, title, 19, kText, Font::Bold, Align::Center);
     Clickable(box, [this, index, action](int) {
         login_focus_ = index;
         action();
     });
 }
 
+// The form on the left and, on the right, the steps of the sign-in or the
+// code with its QR, as on the Mac. The 1280 × 720 design scales to fit the
+// window in both directions and stays centred, so that it never leaves a TV's
+// picture.
 void LibraryScene::DrawLogin()
 {
-    // MainActivity.showLogin on the TV: form on the left, code and QR on the right.
-    Label(At(88, 46, 600, 56), "LunaONE", 40, kLoginInk, Font::Bold);
-    Label(At(88, 104, 600, 30), Tr("Connexion Amazon"), 20, kLoginMuted);
-    float y = 160;
+    offset_x_ = std::max(0.f, (pixel_width_ - 1280 * scale_) / 2);
+    Image(At(88, 56, 72, 72), "lunaone:logo", 16);
+    Label(At(176, 56, 440, 46), "LunaONE", 40, kText, Font::Bold);
+    Label(At(178, 102, 440, 26), Tr("Connexion Amazon"), 18, kViolet);
+    Label(At(88, 148, 480, 48), Tr("Tes jeux Amazon Luna, sans navigateur, sur tous tes écrans."), 17, kSecondary,
+          Font::Regular, Align::Left, true, false);
+
+    // The form, on a frosted card.
+    constexpr float kCardTop = 212, kFormX = 112, kFormWidth = 432;
+    const float card_height = saved_ ? 22 + 3 * 56 + 2 * 12 + 22 : 22 + 34 + 3 * 56 + 2 * 12 + 22;
+    Rect(At(88, kCardTop, 480, card_height), kLoginCard, 18, 1, kLoginCardEdge);
+    float y = kCardTop + 22;
     if (saved_)
     {
-        LoginButton(y, Tr("Réessayer le chargement"), true, [this] { Connect(); });
-        LoginButton(y += 68, Tr("Se déconnecter"), false, [this] { ConfirmSignOut(); });
+        LoginButton(y, Tr("Réessayer le chargement"), true, [this] { Connect(); }, kFormX, kFormWidth);
+        LoginButton(y += 68, Tr("Se déconnecter"), false, [this] { ConfirmSignOut(); }, kFormX, kFormWidth);
     }
     else
     {
-        Label(At(88, y, 480, 28), Tr("Pays du compte"), 18, kLoginMuted);
+        Label(At(kFormX, y, kFormWidth, 26), Tr("Pays du compte"), 16, kSecondary);
+        y += 34;
         std::string market = market_;
         for (const auto& entry : luna::AmazonMarkets())
             if (entry.code == market_) market = entry.native_name;
-        LoginButton(y += 32, market + "   ▾", false, [this] { ShowMarkets(); });
-        LoginButton(y += 68, Tr("Créer un code"), true, [this] { Connect(); });
+        LoginButton(y, market + "   ▾", false, [this] { ShowMarkets(); }, kFormX, kFormWidth);
+        LoginButton(y += 68, Tr("Créer un code"), true, [this] { Connect(); }, kFormX, kFormWidth);
     }
-    LoginButton(y += 68, Tr("Réglages"), false, [this] { ShowSettings(-1); });
+    LoginButton(y += 68, Tr("Réglages"), false, [this] { ShowSettings(-1); }, kFormX, kFormWidth);
+
+    // The right card.
+    Rect(At(640, 112, 552, 456), kLoginCard, 18, 1, kLoginCardEdge);
     if (!code_.empty())
     {
-        Rect(At(640, 150, 552, 420), 0xffffffff, 14);
-        Label(At(666, 174, 500, 50), Tr("Scanne le QR code et saisis le code Amazon."), 18, kLoginMuted, Font::Regular,
-              Align::Left, true, false);
-        // The QR code, module by module, centred in the panel.
+        Label(At(668, 136, 496, 50), Tr("Scanne le QR code et saisis le code Amazon."), 18, kText, Font::Bold,
+              Align::Center, true, false);
+        // The QR keeps a white plate: phone cameras read it best that way.
+        Rect(At(640 + (552 - 212) / 2.f, 196, 212, 212), 0xffffffff, 16);
         const auto qr = MakeDeviceQr(code_address_);
         if (qr.size)
         {
-            const float side = 180, cell = side / qr.size, left = 640 + (552 - side) / 2, top = 230;
+            const float side = 180, cell = side / qr.size, left = 640 + (552 - side) / 2, top = 212;
             for (int row = 0; row < qr.size; ++row)
                 for (int column = 0; column < qr.size; ++column)
                     if (qr.dark[row * qr.size + column])
                         Rect(At(left + column * cell, top + row * cell, cell + .05f, cell + .05f), 0xff000000);
         }
-        Label(At(666, 422, 500, 34), code_address_, 21, kLoginAccent);
-        Label(At(666, 456, 500, 66), code_, 50, kLoginInk, Font::Mono);
-        LoginButton(582, Tr("Ouvrir la page Amazon"), false, [this] { host_.OpenUrl(code_address_); }, 640, 552);
+        Label(At(668, 426, 496, 30), code_address_, 19, kViolet, Font::Regular, Align::Center);
+        Label(At(668, 462, 496, 72), code_, 50, kText, Font::Mono, Align::Center);
     }
-    Label(At(88, y + 76, 520, 28), message_, 17, kLoginMuted);
-    if (busy_) LoginButton(y + 112, Tr("Annuler"), false, [this] { Cancel(); });
+    else
+    {
+        Label(At(672, 140, 488, 32), Tr("Comment se connecter"), 22, kText, Font::Bold);
+        const char* steps[] = {"Choisis le pays de ton compte Amazon, puis crée un code.",
+                               "Scanne le QR code avec ton téléphone ou ouvre la page Amazon.",
+                               "Saisis le code et confirme : ta bibliothèque Luna s’ouvre ici."};
+        for (int i = 0; i < 3; ++i)
+        {
+            const float top = 200 + i * 104;
+            Rect(At(672, top, 44, 44), kLoginButton, 22);
+            Label(At(672, top, 44, 44), std::to_string(i + 1), 20, kText, Font::Bold, Align::Center);
+            Label(At(736, top, 424, 76), Tr(steps[i]), 17, kSecondary, Font::Regular, Align::Left, true, false);
+        }
+        Label(At(672, 516, 488, 30), Tr("Aucun mot de passe n’est saisi dans LunaONE."), 15, kViolet);
+    }
+
+    y = kCardTop + card_height;
+    Label(At(88, y + 12, 480, 28), message_, 16, kSecondary);
+    if (busy_) LoginButton(y + 48, Tr("Annuler"), false, [this] { Cancel(); }, 88, 480);
     if (login_focus_ >= login_count_) login_focus_ = login_count_ ? login_count_ - 1 : 0;
-    Label(At(88, 682, 900, 30), Hints(), 13, kLoginMuted);
+    Label(At(88, 682, 900, 30), Hints(), 13, kSecondary);
+    // The settings and panels drawn next use the full width.
+    offset_x_ = 0;
 }
 
 void LibraryScene::DrawNavigation(const std::string& icon, const std::string& text, bool selected, float x, float y,

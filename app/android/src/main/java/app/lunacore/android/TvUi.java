@@ -14,8 +14,6 @@ import android.view.View;
 import android.widget.Button;
 
 final class TvUi {
-    static final int FOCUS = 0xff5640bb;
-    static final int SELECTED = 0xffe3dcff;
 
     private TvUi() {}
 
@@ -33,26 +31,28 @@ final class TvUi {
         control.setFocusableInTouchMode(true);
     }
 
-    static void button(Button view, boolean primary, int ink, float density) {
-        focusable(view);
-        view.setTextSize(17);
+    // Dark buttons for the sign-in page: violet for the main action, frosted
+    // glass for the others, and a bright ring when the remote focuses one.
+    static void button(Button view, boolean primary, float density) {
         view.setMinHeight(Math.round(50 * density));
-        view.setTextColor(primary ? Color.WHITE : ink);
+        view.setTextColor(Color.WHITE);
         view.setBackgroundTintList(null);
         view.setStateListAnimator(null);
         int horizontal = Math.round(14 * density);
         int vertical = Math.round(4 * density);
         view.setPadding(horizontal, vertical, horizontal, vertical);
-        int radius = Math.round(8 * density);
+        int radius = Math.round(12 * density);
+        int thin = Math.max(1, Math.round(density));
+        int ring = Math.round(3 * density);
         StateListDrawable background = new StateListDrawable();
         background.addState(new int[]{-android.R.attr.state_enabled},
-            shape(primary ? 0xff9b8fca : 0xffedeaf2, radius, 0, 0));
+            shape(primary ? 0x806a4cff : 0x0dffffff, radius, primary ? 0 : thin, 0x26ffffff));
         background.addState(new int[]{android.R.attr.state_focused},
-            shape(primary ? FOCUS : SELECTED, radius, Math.round(3 * density), primary ? 0xffeeebff : FOCUS));
+            shape(primary ? 0xff8466ff : 0x55aa88ff, radius, ring, primary ? Color.WHITE : 0xffaa88ff));
         background.addState(new int[]{android.R.attr.state_pressed},
-            shape(primary ? FOCUS : SELECTED, radius, Math.round(2 * density), FOCUS));
+            shape(primary ? 0xff8466ff : 0x55aa88ff, radius, primary ? 0 : thin, 0x4dffffff));
         background.addState(new int[]{},
-            shape(primary ? 0xff32217d : Color.WHITE, radius, 0, 0));
+            shape(primary ? 0xff6a4cff : 0x1affffff, radius, primary ? 0 : thin, 0x4dffffff));
         view.setBackground(background);
     }
 

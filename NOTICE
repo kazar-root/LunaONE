@@ -18,7 +18,7 @@ They are not digital signatures, a trusted timestamp or independent proof of
 authorship. See docs/PROVENANCE.md in the original LunaNX project for local
 inspection and comparison commands.
 
-LunaONE 0.2 is a modified version of LunaNX 3.1, adapted from 2026-11-18.
+LunaONE 0.3 is a modified version of LunaNX 3.1, adapted from 2026-11-18.
 LunaCore is distributed under GNU GPL version 3. See LICENSE and
 THIRD_PARTY_NOTICES.md. The source baseline and changes are recorded in
 docs/LUNANX-AUDIT.md.

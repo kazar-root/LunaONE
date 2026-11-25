@@ -45,7 +45,7 @@ Run the `LunaONE-iOS` scheme on the iPhone: the watch app installs with it on th
 
 ## Test a game
 
-Select your Amazon market and create a code. Scan the QR code from another device or use the Amazon button on the same device, then enter the displayed code. Select a title in the catalog to start the native stream. Pair a Bluetooth gamepad from iPad settings to control the game. Use the close button to return to the catalog. The Xcode console reports picture and input counts when playback ends.
+Select your Amazon market and create a code. Scan the QR code from another device or use the Amazon button on the same device, then enter the displayed code. The sign-in screen uses the Mac's dark violet design. On an iPad, or an iPhone on its side, the form and the steps (then the code) sit side by side; on an iPhone held upright they are stacked, and the page scrolls when it is taller than the screen. Select a title in the catalog to start the native stream. Pair a Bluetooth gamepad from iPad settings to control the game. Use the close button to return to the catalog. The Xcode console reports picture and input counts when playback ends.
 
 ## LunaCore validation on 2026-11-19
 
@@ -92,3 +92,4 @@ Closing a game with × asks Luna to end that session or cancel that pending laun
 | iPad decoder recovery build | Alan Wake 2 still timed out before the first picture. The app decoded audio and closed the abandoned Luna session. This test preceded the corrected RTP layout and display request. |
 | RTP and RTCP header regression | All nine macOS CTest suites passed, including the canonical RTP and RTCP packet test. The same RTP fixture also compiled for iPadOS arm64. |
 | iPad transport update | The user confirmed that the black screen was resolved. Two sessions presented 810 and 3,630 frames, with no decoder errors and active VideoToolbox hardware decoding. The longest measured frame gaps were 922 ms and 1,001 ms. |
+| V0.3 sign-in screen | The iPhone and iPad app with the redesigned sign-in screen built for iOS 17 arm64 with Xcode. It has not been tried on a device or in a simulator yet. |

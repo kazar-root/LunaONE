@@ -37,3 +37,7 @@ Xcode Debug and universal Release passed all eight CTest suites. The player CLI 
 On 2026-11-19, the native Xcode Debug player ran Sonic Mania Plus in `eu-west-3` for 60 seconds. macOS reported the Xbox Wireless Controller over Bluetooth Low Energy. All 37 transport checks during the run showed the Xbox Bluetooth device with the USB cable disconnected.
 
 The tester confirmed that the D-pad and buttons controlled the game. LunaCore sent 455 reports, including 393 state changes. VideoToolbox hardware decoding was active and the player submitted 3,562 pictures at 59.4 fps. The WebRTC RTT was 9 ms at shutdown and 14 ms at the 95th percentile. The player exited normally.
+
+## Video codec
+
+Luna streams H.264. On 2026-11-25 a test build offered VP9, then VP9 alone. Both times Luna's server answered `a=rtpmap:98 H264/90000`, a payload type that the VP9-only offer did not contain. The video answer is fixed on the server side, so LunaONE offers H.264 only. The SDP names Constrained Baseline (`42e01f`), yet the stream itself is H.264 High at level 5.2 in 1080p. The journal records the answered video lines (`video_answer`), the service flags forwarded to the session (`protocol_features`) and session errors (`session_error`).

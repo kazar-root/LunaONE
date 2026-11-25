@@ -16,11 +16,11 @@ ctest --preset linux
 ./build/linux/lunacore catalog --all
 ```
 
-The `LunaONE-V0.2-Linux-Alpine-arm64.tar.gz` archive targets Alpine 3.23 and uses musl. On Alpine, install `gtk+3.0 sdl2 ffmpeg-libs libcurl font-dejavu` before opening the app. Use the Linux preset to build against another distribution's libraries.
+The `LunaONE-V0.3-Linux-Alpine-arm64.tar.gz` archive targets Alpine 3.23 and uses musl. On Alpine, install `gtk+3.0 sdl2 ffmpeg-libs libcurl font-dejavu` before opening the app. Use the Linux preset to build against another distribution's libraries.
 
 ## FreeBSD
 
-The FreeBSD client uses GTK 3 for the catalog, the shared WebRTC engine, FFmpeg for H.264 video, and SDL2 for audio and controllers. The release offers `LunaONE-V0.2-FreeBSD-amd64.tar.gz` and `LunaONE-V0.2-FreeBSD-aarch64.tar.gz` for FreeBSD 14.4, 14.5, 15.0 and 15.1. You can validate the first Amazon sign-in by scanning the QR code with a phone. Browse the catalog and launch games from LunaONE in your FreeBSD graphical session.
+The FreeBSD client uses GTK 3 for the catalog, the shared WebRTC engine, FFmpeg for H.264 video, and SDL2 for audio and controllers. The release offers `LunaONE-V0.3-FreeBSD-amd64.tar.gz` and `LunaONE-V0.3-FreeBSD-aarch64.tar.gz` for FreeBSD 14.4, 14.5, 15.0 and 15.1. You can validate the first Amazon sign-in by scanning the QR code with a phone. Browse the catalog and launch games from LunaONE in your FreeBSD graphical session.
 
 Install the build and runtime dependencies with `pkg` as root.
 
@@ -49,9 +49,11 @@ The current archives were cross-built from a FreeBSD 14.4 sysroot with clang and
 
 ## Windows
 
-Extract `LunaONE-V0.2-Windows-x64.zip` for an Intel or AMD PC, or `LunaONE-V0.2-Windows-arm64.zip` for a Windows ARM PC. Keep the files in the extracted folder together and double-click `LunaONE.exe`, the only program in the archive. The command-line client `LunaONE-cli.exe` comes from a source build.
+Extract `LunaONE-V0.3-Windows-x64.zip` for an Intel or AMD PC, or `LunaONE-V0.3-Windows-arm64.zip` for a Windows ARM PC. Keep the files in the extracted folder together and double-click `LunaONE.exe`, the only program in the archive. The command-line client `LunaONE-cli.exe` comes from a source build.
 
 Choose the country for your Amazon account, create a code and scan the QR to open the Amazon confirmation page. Return to LunaONE after confirming. The window loads the catalog, searches Luna by title and can explore linked collections for more titles. Use **Se déconnecter** to remove the saved account from the PC.
+
+The sign-in screen uses the same dark violet design as the Mac: the form on the left, and on the right the three sign-in steps, replaced by the QR code and the Amazon code once one is created. Windows (Direct2D) and Linux and FreeBSD (Cairo) draw it from the shared scene in `app/src/ui/library_scene.cpp`. The page is laid out at 1280 × 720 and scaled to the window, centred on both axes, so it keeps its proportions in a small window, in full screen or on a TV connected to the PC.
 
 To start a stream, select a title and click **Jouer**, double-click the title, or press Enter with the title selected. The Windows player uses the shared WebRTC engine, Media Foundation H.264 decoding, Opus audio and the controllers read through SDL2. Playback diagnostics are written to `runtime.log` in the app’s local data directory.
 
@@ -125,3 +127,15 @@ The Linux media test verified reception and decoding. A desktop window, audio ou
 | Android | The V0.2 APK has version code 11 and the V0.1 signing certificate, so it installs over V0.1. |
 | iPhone and iPad | Xcode's asset catalog compiler needs an iOS Simulator runtime, which this Mac lacks. The V0.2 IPA was built without the catalog and carries the V0.1 icons, which have not changed. |
 | FreeBSD | The amd64 and aarch64 archives were rebuilt from the FreeBSD 14.4 sysroot. Every dynamic symbol resolves. The only new ones come from SDL2 2.32.10, which the FreeBSD 14 and 15 repositories both ship. |
+
+## LunaONE validation on 2026-11-25 (V0.3)
+
+| Check | Result |
+| --- | --- |
+| Sign-in screen | The shared scene draws the dark sign-in screen at 1280 × 720 and scales it to the window, centred. A headless Cairo render on Alpine Linux matched the macOS screen: gradient, glows, frosted cards and the three steps. The "Open the Amazon page" button is gone from the computer sign-in screen, because it stayed disabled while LunaONE waited for the code. |
+| Linux | The Alpine ARM64 build passed all 13 CTest suites. |
+| macOS | The universal V0.3 app passed all 13 CTest suites. |
+| Windows | LLVM-MinGW built the x64 and ARM64 apps, including the Direct2D gradient backdrop. The archives hold the same files as V0.2, and the executables need only system DLLs besides the packaged ones. The new screen still needs a look on a Windows PC. |
+| FreeBSD | The amd64 and aarch64 archives were built from the FreeBSD 14.4 sysroot, and every dynamic symbol resolves. The only new symbol, `cairo_pattern_create_radial`, comes from the base Cairo library. |
+| Android | The V0.3 APK has version code 12 and the certificate of V0.1 and V0.2, so it installs over them. |
+| iPhone and iPad | The V0.3 IPA was built without the asset catalog, as for V0.2, and carries the same icons. |

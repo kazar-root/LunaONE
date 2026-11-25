@@ -1,10 +1,13 @@
 <resources>
+    <!-- Every screen is dark (sign-in, catalog, player): dark system bars with
+         light icons, and a night-blue window so nothing flashes white at launch.
+         Dialogs keep the light Material look. -->
     <style name="LunaTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#4930B1</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#F5F3FA</item>
-        <item name="android:navigationBarColor">#F5F3FA</item>
-        <item name="android:windowBackground">#F5F3FA</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0C0820</item>
+        <item name="android:navigationBarColor">#0C0820</item>
+        <item name="android:windowBackground">#0C0820</item>
     </style>
 </resources>

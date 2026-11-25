@@ -13,8 +13,12 @@ import android.content.pm.ActivityInfo;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
 import android.net.Uri;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
@@ -43,6 +47,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ImageView;
+import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 
@@ -52,10 +57,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
-    private static final int BG = 0xfff5f3fa;
-    private static final int INK = 0xff211c34;
-    private static final int MUTED = 0xff625a78;
-    private static final int ACCENT = 0xff4930b1;
+    // The sign-in screen in the library's night colours, as on the Mac: white
+    // text, lavender details, violet accents on frosted cards.
+    private static final int INK = 0xfffaf8ff;
+    private static final int MUTED = 0xffc7bdd4;
+    private static final int ACCENT = 0xffaa88ff;
+    private static final int CARD = 0x1fffffff;
+    private static final int CARD_EDGE = 0x40aa88ff;
+    private static final int BADGE = 0xff6a4cff;
     private static final ExecutorService ENGINE = Executors.newSingleThreadExecutor();
 
     static { System.loadLibrary("lunaone_android"); }
@@ -167,7 +176,7 @@ public final class MainActivity extends Activity {
         public void onStatus(String message) {
             runOnUiThread(() -> {
                 if (active != this || cancelled || destroyed) return;
-                if (screen == Screen.LOGIN && codePanel != null) codePanel.setVisibility(View.GONE);
+                if (screen == Screen.LOGIN && codePanel != null) showCodePanel(false);
                 setStatus(message);
             });
         }
@@ -189,7 +198,7 @@ public final class MainActivity extends Activity {
                 codeValue.setText(code);
                 showQr(url);
                 if (verificationAddress != null) verificationAddress.setText(url);
-                codePanel.setVisibility(View.VISIBLE);
+                showCodePanel(true);
                 setStatus("Confirme ce code sur Amazon, puis reviens dans LunaONE.");
             });
         }
@@ -227,7 +236,7 @@ public final class MainActivity extends Activity {
     private int gamepadId = -1, buttons, hatButtons, left, right, lx, ly, rx, ry;
     private TextView status, codeValue, verificationAddress, hud;
     private ImageView codeQr;
-    private LinearLayout body, codePanel;
+    private LinearLayout body, codePanel, stepsPanel;
     private Button cancel;
     private View preferredFocus;
 
@@ -287,13 +296,9 @@ public final class MainActivity extends Activity {
         Button view = new Button(this);
         view.setText(t(label));
         view.setAllCaps(false);
-        view.setTextSize(14);
-        if (tv) {
-            TvUi.button(view, primary, INK, getResources().getDisplayMetrics().density);
-        } else if (primary) {
-            view.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
-            view.setTextColor(Color.WHITE);
-        }
+        if (tv) TvUi.focusable(view);
+        TvUi.button(view, primary, getResources().getDisplayMetrics().density);
+        view.setTextSize(tv ? 17 : 15);
         view.setOnClickListener(v -> action.run());
         return view;
     }
@@ -307,27 +312,95 @@ public final class MainActivity extends Activity {
     private void base(String subtitle) {
         actions.clear();
         codePanel = null;
+        stepsPanel = null;
         verificationAddress = null;
         preferredFocus = null;
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setBackgroundColor(BG);
-        body.setOnApplyWindowInsetsListener((view, insets) -> {
-            int horizontal = dp(tv ? 44 : 20);
-            view.setPadding(horizontal + insets.getSystemWindowInsetLeft(), dp(tv ? 24 : 16) + insets.getSystemWindowInsetTop(),
-                            horizontal + insets.getSystemWindowInsetRight(), dp(tv ? 22 : 10) + insets.getSystemWindowInsetBottom());
-            return insets;
-        });
-        // Status/navigation bar insets are routed into catalog margins on Android 15+.
-        setContentView(body);
-        body.requestApplyInsets();
-        TextView title = text("LunaONE", tv ? 40 : 33, INK);
+        body.setBackground(backdrop());
+        if (tv) {
+            // A 960 × 540 dp page, scaled to fit inside the TV's safe area:
+            // it never leaves the picture, even on a TV that crops its edges.
+            body.setPadding(dp(28), dp(22), dp(28), dp(18));
+            FitFrame frame = new FitFrame(this, dp(960), dp(540));
+            frame.setBackgroundColor(0xff0c0820);
+            frame.addView(body);
+            setContentView(frame);
+        } else {
+            body.setOnApplyWindowInsetsListener((view, insets) -> {
+                int horizontal = dp(20);
+                view.setPadding(horizontal + insets.getSystemWindowInsetLeft(), dp(16) + insets.getSystemWindowInsetTop(),
+                                horizontal + insets.getSystemWindowInsetRight(), dp(10) + insets.getSystemWindowInsetBottom());
+                return insets;
+            });
+            // Status/navigation bar insets are routed into catalog margins on Android 15+.
+            // The page scrolls when it is taller than the screen: a small phone,
+            // a phone on its side, or a car screen.
+            ScrollView scroll = new ScrollView(this);
+            scroll.setFillViewport(true);
+            scroll.setBackgroundColor(0xff0c0820);
+            scroll.addView(body, new FrameLayout.LayoutParams(-1, -2));
+            setContentView(scroll);
+            body.requestApplyInsets();
+        }
+        // Logo, name and subtitle, then the line that says what LunaONE is.
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.luna_icon);
+        logo.setBackground(TvUi.shape(CARD, dp(14), 0, 0));
+        logo.setClipToOutline(true);
+        int logoSize = dp(tv ? 60 : 52);
+        LinearLayout.LayoutParams logoLayout = new LinearLayout.LayoutParams(logoSize, logoSize);
+        logoLayout.rightMargin = dp(16);
+        header.addView(logo, logoLayout);
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text("LunaONE", tv ? 36 : 30, INK);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        body.addView(title);
-        TextView section = text(t(subtitle), tv ? 20 : 16, MUTED);
-        LinearLayout.LayoutParams sectionSize = new LinearLayout.LayoutParams(-1, -2);
-        sectionSize.bottomMargin = dp(14);
-        body.addView(section, sectionSize);
+        names.addView(title);
+        names.addView(text(t(subtitle), tv ? 17 : 15, ACCENT));
+        header.addView(names);
+        body.addView(header);
+        TextView tagline = text(t("Tes jeux Amazon Luna, sans navigateur, sur tous tes écrans."), tv ? 16 : 14, MUTED);
+        LinearLayout.LayoutParams taglineLayout = new LinearLayout.LayoutParams(-1, -2);
+        taglineLayout.topMargin = dp(10);
+        taglineLayout.bottomMargin = dp(tv ? 16 : 14);
+        body.addView(tagline, taglineLayout);
+    }
+
+    // The logo's violet deepening to night blue from the top left, with two soft glows.
+    private Drawable backdrop() {
+        GradientDrawable base = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+            new int[]{0xff3a1f9a, 0xff1b1150, 0xff0c0820});
+        float width = tv ? dp(960) : getResources().getDisplayMetrics().widthPixels;
+        GradientDrawable glow = new GradientDrawable();
+        glow.setGradientType(GradientDrawable.RADIAL_GRADIENT);
+        glow.setColors(new int[]{0x707c4dff, 0x007c4dff});
+        glow.setGradientCenter(0.82f, 0.18f);
+        glow.setGradientRadius(width * 0.45f);
+        GradientDrawable low = new GradientDrawable();
+        low.setGradientType(GradientDrawable.RADIAL_GRADIENT);
+        low.setColors(new int[]{0x40b06bff, 0x00b06bff});
+        low.setGradientCenter(0.08f, 0.92f);
+        low.setGradientRadius(width * 0.4f);
+        return new LayerDrawable(new Drawable[]{base, glow, low});
+    }
+
+    private GradientDrawable card() {
+        return TvUi.shape(CARD, dp(18), Math.max(1, dp(1)), CARD_EDGE);
+    }
+
+    // The steps panel stands where the code appears once there is one.
+    private void showCodePanel(boolean visible) {
+        if (codePanel != null) codePanel.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (stepsPanel != null) stepsPanel.setVisibility(visible ? View.GONE : View.VISIBLE);
+        if (visible && !tv && codePanel != null) {
+            // On a phone, scroll the new code into view.
+            LinearLayout panel = codePanel;
+            panel.post(() -> panel.requestRectangleOnScreen(new Rect(0, 0, panel.getWidth(), panel.getHeight())));
+        }
     }
 
     private void footer(String message) {
@@ -343,27 +416,44 @@ public final class MainActivity extends Activity {
     private void showLogin(String message) {
         screen = Screen.LOGIN;
         base("Connexion Amazon");
-        LinearLayout form = body;
+        // The form, on a frosted card: on the left on a TV, first on a phone.
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setBackground(card());
+        form.setPadding(dp(tv ? 22 : 16), dp(tv ? 16 : 12), dp(tv ? 22 : 16), dp(tv ? 18 : 14));
         LinearLayout panels = null;
         if (tv) {
             panels = new LinearLayout(this);
             body.addView(panels, new LinearLayout.LayoutParams(-1, 0, 1));
-            form = new LinearLayout(this);
-            form.setOrientation(LinearLayout.VERTICAL);
-            form.setPadding(0, 0, dp(28), 0);
-            panels.addView(form, new LinearLayout.LayoutParams(0, -1, 1));
+            LinearLayout column = new LinearLayout(this);
+            column.setOrientation(LinearLayout.VERTICAL);
+            column.setPadding(0, 0, dp(28), 0);
+            column.addView(form, new LinearLayout.LayoutParams(-1, -2));
+            panels.addView(column, new LinearLayout.LayoutParams(0, -1, 1));
+        } else {
+            body.addView(form, new LinearLayout.LayoutParams(-1, -2));
         }
         if (savedDevice) {
             preferredFocus = action("Réessayer le chargement", true, () -> begin("Chargement du catalogue Luna…",
                                                                                  job -> nativeRestore()));
-            form.addView(preferredFocus);
-            form.addView(action("Se déconnecter", false, this::confirmSignOut));
+            spaced(form, preferredFocus);
+            spaced(form, action("Se déconnecter", false, this::confirmSignOut));
         } else if (markets.length > 0) {
-            form.addView(text(t("Pays du compte"), tv ? 18 : 14, MUTED));
+            form.addView(text(t("Pays du compte"), tv ? 16 : 14, MUTED));
             Spinner spinner = new Spinner(this);
             String[] labels = new String[markets.length / 2];
             for (int i = 0; i < labels.length; i++) labels[i] = markets[2 * i + 1];
-            ArrayAdapter<String> regions = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels);
+            // White text on the dark card; the open list keeps the system colours.
+            ArrayAdapter<String> regions = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels) {
+                @Override public View getView(int position, View convertView, ViewGroup parent) {
+                    View view = super.getView(position, convertView, parent);
+                    if (view instanceof TextView label) {
+                        label.setTextColor(INK);
+                        label.setTextSize(tv ? 18 : 16);
+                    }
+                    return view;
+                }
+            };
             regions.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
             spinner.setAdapter(regions);
             String preferredMarket = nativePreferredMarket();
@@ -371,59 +461,133 @@ public final class MainActivity extends Activity {
                 if (markets[2 * i].equals(preferredMarket)) marketIndex = i;
             spinner.setSelection(marketIndex);
             actions.add(spinner);
+            spinner.setBackgroundTintList(ColorStateList.valueOf(MUTED));
             if (tv) {
                 TvUi.focusable(spinner);
                 spinner.setOnFocusChangeListener((view, focused) -> view.setBackgroundTintList(
-                    ColorStateList.valueOf(focused ? TvUi.FOCUS : MUTED)));
+                    ColorStateList.valueOf(focused ? ACCENT : MUTED)));
             }
             form.addView(spinner, new LinearLayout.LayoutParams(-1, dp(tv ? 58 : 48)));
             preferredFocus = action("Créer un code", true, () -> {
                 marketIndex = spinner.getSelectedItemPosition();
                 begin("Création du code Amazon…", job -> nativeConnect(markets[2 * marketIndex], job));
             });
-            form.addView(preferredFocus);
+            spaced(form, preferredFocus);
         }
-        form.addView(action("Réglages", false, this::videoSettings));
+        spaced(form, action("Réglages", false, this::videoSettings));
+
+        // The code: the QR on a white plate, which phone cameras read best,
+        // then the address and the code itself.
         codePanel = new LinearLayout(this);
         codePanel.setOrientation(LinearLayout.VERTICAL);
-        codePanel.setPadding(dp(tv ? 26 : 16), dp(tv ? 24 : 10), dp(tv ? 26 : 16), dp(tv ? 24 : 10));
-        codePanel.setBackground(TvUi.shape(Color.WHITE, dp(14), 0, 0));
-        codeValue = text("", tv ? 50 : 30, INK);
+        codePanel.setBackground(card());
+        codePanel.setPadding(dp(tv ? 22 : 16), dp(tv ? 18 : 12), dp(tv ? 22 : 16), dp(tv ? 18 : 12));
+        codeValue = text("", tv ? 40 : 30, INK);
         codeValue.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        codeValue.setGravity(Gravity.CENTER_HORIZONTAL);
         codeQr = new ImageView(this);
         codeQr.setContentDescription("QR");
         codeQr.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        int qrSize = dp(tv ? 132 : 125);
-        LinearLayout.LayoutParams qrLayout = new LinearLayout.LayoutParams(qrSize, qrSize);
-        qrLayout.gravity = Gravity.CENTER_HORIZONTAL;
+        FrameLayout plate = new FrameLayout(this);
+        plate.setBackground(TvUi.shape(Color.WHITE, dp(14), 0, 0));
+        plate.setPadding(dp(10), dp(10), dp(10), dp(10));
+        int qrSize = dp(tv ? 150 : 125);
+        plate.addView(codeQr, new FrameLayout.LayoutParams(qrSize, qrSize));
+        LinearLayout.LayoutParams plateLayout = new LinearLayout.LayoutParams(-2, -2);
+        plateLayout.gravity = Gravity.CENTER_HORIZONTAL;
+        plateLayout.topMargin = dp(tv ? 12 : 4);
         if (tv) {
-            codePanel.addView(text(t("Scanne le QR code et saisis le code Amazon."), 18, MUTED));
-            codePanel.addView(codeQr, qrLayout);
-            verificationAddress = text("", 21, ACCENT);
-            verificationAddress.setPadding(0, dp(12), 0, dp(8));
-            codePanel.addView(verificationAddress);
-            codePanel.addView(codeValue);
+            // The QR beside the address and the code, so the card stays low
+            // enough for the Cancel button under it.
+            TextView heading = text(t("Scanne le QR code et saisis le code Amazon."), 17, INK);
+            heading.setTypeface(Typeface.DEFAULT_BOLD);
+            codePanel.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            plateLayout.gravity = Gravity.CENTER_VERTICAL;
+            row.addView(plate, plateLayout);
+            LinearLayout where = new LinearLayout(this);
+            where.setOrientation(LinearLayout.VERTICAL);
+            verificationAddress = text("", 17, ACCENT);
+            where.addView(verificationAddress, new LinearLayout.LayoutParams(-1, -2));
+            codeValue.setGravity(Gravity.START);
+            LinearLayout.LayoutParams codeLayout = new LinearLayout.LayoutParams(-1, -2);
+            codeLayout.topMargin = dp(8);
+            where.addView(codeValue, codeLayout);
+            LinearLayout.LayoutParams whereLayout = new LinearLayout.LayoutParams(0, -2, 1);
+            whereLayout.leftMargin = dp(20);
+            whereLayout.topMargin = dp(12);
+            row.addView(where, whereLayout);
+            codePanel.addView(row, new LinearLayout.LayoutParams(-1, -2));
             panels.addView(codePanel, new LinearLayout.LayoutParams(0, -2, 1.2f));
+            // The steps explain a new sign-in, not a saved account that failed to load.
+            if (!savedDevice) {
+                stepsPanel = steps();
+                panels.addView(stepsPanel, new LinearLayout.LayoutParams(0, -2, 1.2f));
+            }
         } else {
             codeValue.setTextIsSelectable(true);
-            codePanel.addView(codeQr, qrLayout);
-            codePanel.addView(codeValue);
-            codePanel.addView(button("Copier le code", false, () -> {
+            codePanel.addView(plate, plateLayout);
+            codePanel.addView(codeValue, new LinearLayout.LayoutParams(-1, -2));
+            spaced(codePanel, button("Copier le code", false, () -> {
                 ClipboardManager clipboard = getSystemService(ClipboardManager.class);
                 clipboard.setPrimaryClip(ClipData.newPlainText("Code Amazon", deviceCode));
             }));
-            codePanel.addView(button("Ouvrir Amazon", true, () -> {
+            spaced(codePanel, button("Ouvrir Amazon", true, () -> {
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(verificationUrl)));
                 } catch (ActivityNotFoundException error) {
                     setStatus("Ouvre cette page sur un autre appareil. " + verificationUrl);
                 }
             }));
-            body.addView(codePanel);
+            LinearLayout.LayoutParams panelLayout = new LinearLayout.LayoutParams(-1, -2);
+            panelLayout.topMargin = dp(12);
+            body.addView(codePanel, panelLayout);
         }
-        codePanel.setVisibility(View.GONE);
+        showCodePanel(false);
         footer(message);
         refreshActions();
+    }
+
+    // Adds a control under the previous one, with a gap.
+    private void spaced(LinearLayout parent, View view) {
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, -2);
+        if (parent.getChildCount() > 0) layout.topMargin = dp(10);
+        parent.addView(view, layout);
+    }
+
+    // On a TV, before a code: the three steps of the sign-in, as on the Mac.
+    private LinearLayout steps() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackground(card());
+        panel.setPadding(dp(24), dp(20), dp(24), dp(20));
+        TextView heading = text(t("Comment se connecter"), 20, INK);
+        heading.setTypeface(Typeface.DEFAULT_BOLD);
+        panel.addView(heading);
+        String[] lines = {"Choisis le pays de ton compte Amazon, puis crée un code.",
+                          "Scanne le QR code avec ton téléphone ou ouvre la page Amazon.",
+                          "Saisis le code et confirme : ta bibliothèque Luna s’ouvre ici."};
+        for (int i = 0; i < lines.length; i++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView badge = text(String.valueOf(i + 1), 17, INK);
+            badge.setTypeface(Typeface.DEFAULT_BOLD);
+            badge.setGravity(Gravity.CENTER);
+            badge.setBackground(TvUi.shape(BADGE, dp(18), 0, 0));
+            row.addView(badge, new LinearLayout.LayoutParams(dp(36), dp(36)));
+            LinearLayout.LayoutParams lineLayout = new LinearLayout.LayoutParams(0, -2, 1);
+            lineLayout.leftMargin = dp(14);
+            row.addView(text(t(lines[i]), 15, MUTED), lineLayout);
+            LinearLayout.LayoutParams rowLayout = new LinearLayout.LayoutParams(-1, -2);
+            rowLayout.topMargin = dp(16);
+            panel.addView(row, rowLayout);
+        }
+        TextView note = text(t("Aucun mot de passe n’est saisi dans LunaONE."), 14, ACCENT);
+        LinearLayout.LayoutParams noteLayout = new LinearLayout.LayoutParams(-1, -2);
+        noteLayout.topMargin = dp(18);
+        panel.addView(note, noteLayout);
+        return panel;
     }
 
     private void showCatalog(String message) {
@@ -684,7 +848,7 @@ public final class MainActivity extends Activity {
     private void cancelJob() {
         if (active == null) return;
         active.cancelled = true;
-        if (codePanel != null) codePanel.setVisibility(View.GONE);
+        if (codePanel != null) showCodePanel(false);
         setStatus("Annulation…");
         refreshActions();
     }

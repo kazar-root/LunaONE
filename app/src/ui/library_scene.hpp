@@ -40,8 +40,12 @@ struct Point
 // One drawing operation, in window pixels, painted in order.
 struct Paint
 {
-    // Shade: LibraryScreen's vertical gradient over the backdrop.
-    enum class Kind { Rect, Text, Image, Icon, Shade } kind = Kind::Rect;
+    // Shade: LibraryScreen's vertical gradient over the backdrop. Backdrop: the
+    // sign-in screen's violet, deepening to night blue (#3a1f9a, #1b1150 at
+    // 55 %, #0c0820) from the top left, with two soft glows: #7c4dff at 44 %
+    // around (82 %, 18 %), radius 45 % of the width, and #b06bff at 25 %
+    // around (8 %, 92 %), radius 40 %.
+    enum class Kind { Rect, Text, Image, Icon, Shade, Backdrop } kind = Kind::Rect;
     Box box;
     // Rect fill, text colour or icon stroke, as 0xAARRGGBB.
     std::uint32_t color = 0;
@@ -235,6 +239,8 @@ class LibraryScene
     std::vector<Paint> paints_;
     std::vector<Hit> hits_;
     float scale_ = 1, width_ = 1280, offset_y_ = 0, pixel_width_ = 1280, pixel_height_ = 720;
+    // The sign-in screen centres its 1280-wide design; the library uses the full width.
+    float offset_x_ = 0;
 
     std::shared_ptr<luna::LunaClient> client_;
     std::vector<luna::Shelf> shelves_;

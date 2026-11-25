@@ -824,6 +824,11 @@ void LunaClient::LoadAppConfig()
         if (json_is_true(json_object_get(feature, "forwardToProtocol")) && json_is_string(value))
             account_.protocol_features.emplace_back(name, json_string_value(value));
     }
+    // The service flags the session request forwards, for the journal.
+    std::string forwarded;
+    for (const auto& [feature_name, feature_value] : account_.protocol_features)
+        forwarded += (forwarded.empty() ? "" : " ") + feature_name + "=" + feature_value.substr(0, 48);
+    LogRuntimeEvent("luna", "protocol_features", forwarded.empty() ? std::string("none") : forwarded);
 }
 
 void LunaClient::SelectProfile(const Status& status)

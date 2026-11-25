@@ -13,6 +13,7 @@
 #include "ui/image_url_policy.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -77,6 +78,67 @@ UIButton* Button(NSString* title, BOOL primary, id target, SEL action)
     return button;
 }
 
+// The sign-in page uses the Mac's palette: the logo's violet deepening to night
+// blue, frosted cards, violet main buttons and glass secondary ones.
+UIColor* Argb(std::uint32_t value)
+{
+    return [UIColor colorWithRed:((value >> 16) & 0xff) / 255.0 green:((value >> 8) & 0xff) / 255.0
+                            blue:(value & 0xff) / 255.0 alpha:(value >> 24) / 255.0];
+}
+
+constexpr std::uint32_t kLoginInk = 0xfffaf8ff, kLoginMuted = 0xffc7bdd4, kLoginViolet = 0xffaa88ff,
+                        kLoginCard = 0x1fffffff, kLoginCardEdge = 0x40aa88ff, kLoginButton = 0xff6a4cff,
+                        kLoginSecondary = 0x1affffff, kLoginOutline = 0x4dffffff;
+
+UIButton* LoginButton(NSString* title, BOOL primary, id target, SEL action)
+{
+    auto configuration = UIButtonConfiguration.plainButtonConfiguration;
+    configuration.title = Localized(title);
+    configuration.baseForegroundColor = UIColor.whiteColor;
+    configuration.contentInsets = NSDirectionalEdgeInsetsMake(13, 16, 13, 16);
+    configuration.background.backgroundColor = Argb(primary ? kLoginButton : kLoginSecondary);
+    configuration.background.cornerRadius = 12;
+    if (!primary)
+    {
+        configuration.background.strokeColor = Argb(kLoginOutline);
+        configuration.background.strokeWidth = 1;
+    }
+    configuration.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
+        NSDictionary<NSAttributedStringKey, id>* attributes) {
+        NSMutableDictionary<NSAttributedStringKey, id>* result = [attributes mutableCopy];
+        result[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        return result;
+    };
+    auto button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+    if (action)
+        [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+UIStackView* LoginCard(NSArray<UIView*>* views)
+{
+    auto card = [[UIStackView alloc] initWithArrangedSubviews:views];
+    card.axis = UILayoutConstraintAxisVertical;
+    card.spacing = 12;
+    card.layoutMarginsRelativeArrangement = YES;
+    card.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(20, 22, 22, 22);
+    card.backgroundColor = Argb(kLoginCard);
+    card.layer.cornerRadius = 18;
+    card.layer.borderWidth = 1;
+    card.layer.borderColor = Argb(kLoginCardEdge).CGColor;
+    return card;
+}
+
+CAGradientLayer* Glow(std::uint32_t color)
+{
+    auto glow = [CAGradientLayer layer];
+    glow.type = kCAGradientLayerRadial;
+    glow.colors = @[(__bridge id)Argb(color).CGColor, (__bridge id)Argb(color & 0x00ffffff).CGColor];
+    glow.startPoint = CGPointMake(.5, .5);
+    glow.endPoint = CGPointMake(1, 1);
+    return glow;
+}
+
 struct Catalog
 {
     std::shared_ptr<LunaClient> client;
@@ -106,6 +168,47 @@ Catalog FetchCatalog(DeviceRegistration registration)
 @end
 @implementation LunaLibraryShade
 + (Class)layerClass { return CAGradientLayer.class; }
+@end
+
+// The sign-in page's background: a diagonal gradient and two soft glows, as on the Mac.
+@interface LunaLoginBackdrop : UIView
+@end
+@implementation LunaLoginBackdrop
+{
+    CAGradientLayer* _glow;
+    CAGradientLayer* _low;
+}
++ (Class)layerClass { return CAGradientLayer.class; }
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if (!(self = [super initWithFrame:frame]))
+        return nil;
+    self.userInteractionEnabled = NO;
+    auto base = (CAGradientLayer*)self.layer;
+    base.colors = @[(__bridge id)Argb(0xff3a1f9a).CGColor, (__bridge id)Argb(0xff1b1150).CGColor,
+                    (__bridge id)Argb(0xff0c0820).CGColor];
+    base.locations = @[@0, @.55, @1];
+    base.startPoint = CGPointMake(0, 0);
+    base.endPoint = CGPointMake(1, 1);
+    _glow = Glow(0x707c4dff);
+    _low = Glow(0x40b06bff);
+    [self.layer addSublayer:_glow];
+    [self.layer addSublayer:_low];
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    const CGFloat width = self.bounds.size.width, height = self.bounds.size.height;
+    const CGFloat high = .45 * MAX(width, height), low = .4 * MAX(width, height);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _glow.frame = CGRectMake(.82 * width - high, .18 * height - high, 2 * high, 2 * high);
+    _low.frame = CGRectMake(.08 * width - low, .92 * height - low, 2 * low, 2 * low);
+    [CATransaction commit];
+}
 @end
 
 @interface LunaGameCell : UICollectionViewCell
@@ -264,6 +367,14 @@ Catalog FetchCatalog(DeviceRegistration registration)
     BOOL _busy;
     BOOL _registered;
     UIStackView* _panel;
+    UIStackView* _cards;
+    UIStackView* _formCard;
+    UIStackView* _codeCard;
+    UIStackView* _stepsCard;
+    UIScrollView* _loginScroll;
+    LunaLoginBackdrop* _loginBackdrop;
+    NSLayoutConstraint* _panelWidth;
+    UILabel* _address;
     UILabel* _heading;
     UILabel* _status;
     UILabel* _code;
@@ -385,20 +496,19 @@ Catalog FetchCatalog(DeviceRegistration registration)
     _search.searchBar.placeholder = @"Rechercher dans le catalogue";
     self.definesPresentationContext = YES;
 
-    _heading = Label(UIFontTextStyleTitle1, UIColor.labelColor);
-    _heading.textAlignment = NSTextAlignmentCenter;
-    _status = Label(UIFontTextStyleBody, UIColor.secondaryLabelColor);
-    _status.textAlignment = NSTextAlignmentCenter;
-    _code = Label(UIFontTextStyleTitle1, UIColor.labelColor);
-    _code.font = [UIFont monospacedSystemFontOfSize:42 weight:UIFontWeightSemibold];
+    _heading = Label(UIFontTextStyleTitle3, Argb(kLoginViolet));
+    _status = Label(UIFontTextStyleBody, Argb(kLoginMuted));
+    _code = Label(UIFontTextStyleTitle1, Argb(kLoginInk));
+    _code.font = [UIFontMetrics.defaultMetrics scaledFontForFont:
+        [UIFont monospacedSystemFontOfSize:40 weight:UIFontWeightSemibold]];
     _code.textAlignment = NSTextAlignmentCenter;
     _code.accessibilityIdentifier = @"amazon-device-code";
+    _address = Label(UIFontTextStyleHeadline, Argb(kLoginViolet));
+    _address.textAlignment = NSTextAlignmentCenter;
     _qr = [UIImageView new];
     _qr.contentMode = UIViewContentModeScaleAspectFit;
     _qr.accessibilityLabel = @"QR";
-    auto qrHeight = [_qr.heightAnchor constraintEqualToConstant:128];
-    qrHeight.priority = UILayoutPriorityRequired - 1;
-    qrHeight.active = YES;
+    _qr.layer.magnificationFilter = kCAFilterNearest;
     _sections = [[UISegmentedControl alloc] initWithItems:@[@"Top 10", @"Reprendre", @"Tous les jeux", @"Luna Premium"]];
     _sections.selectedSegmentIndex = 2;
     _sections.selectedSegmentTintColor = [UIColor colorWithRed:.37 green:.23 blue:.62 alpha:1];
@@ -436,28 +546,117 @@ Catalog FetchCatalog(DeviceRegistration registration)
     [_play.widthAnchor constraintGreaterThanOrEqualToConstant:145].active = YES;
     _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     _spinner.hidesWhenStopped = YES;
-    _marketButton = Button(@"Boutique Amazon", NO, self, nil);
+    _spinner.color = Argb(kLoginInk);
+    _marketButton = LoginButton(@"Boutique Amazon", NO, self, nil);
     _marketButton.showsMenuAsPrimaryAction = YES;
-    _connect = Button(@"Créer un code", YES, self, @selector(connectOrRefresh));
+    _connect = LoginButton(@"Créer un code", YES, self, @selector(connectOrRefresh));
     _connect.accessibilityIdentifier = @"amazon-login";
-    _verify = Button(@"Ouvrir la page Amazon", YES, self, @selector(openAmazon));
-    _copy = Button(@"Copier le code", NO, self, @selector(copyCode));
-    _cancelButton = Button(@"Annuler", NO, self, @selector(cancelSignIn));
+    _verify = LoginButton(@"Ouvrir la page Amazon", YES, self, @selector(openAmazon));
+    _copy = LoginButton(@"Copier le code", NO, self, @selector(copyCode));
+    _cancelButton = LoginButton(@"Annuler", NO, self, @selector(cancelSignIn));
 
-    _panel = [[UIStackView alloc] initWithArrangedSubviews:@[
-        _heading, _status, _spinner, _marketButton, _connect, _qr, _code, _copy, _verify, _cancelButton]];
+    // Sign-in page: logo and name, what LunaONE is, then the form card and,
+    // beside it on a wide screen (under it on a narrow one), the steps or the code.
+    auto logo = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"LunaONE"]];
+    logo.contentMode = UIViewContentModeScaleAspectFill;
+    logo.layer.cornerRadius = 16;
+    logo.clipsToBounds = YES;
+    [logo.widthAnchor constraintEqualToConstant:64].active = YES;
+    [logo.heightAnchor constraintEqualToConstant:64].active = YES;
+    auto name = Label(UIFontTextStyleLargeTitle, Argb(kLoginInk));
+    name.font = [UIFontMetrics.defaultMetrics scaledFontForFont:[UIFont systemFontOfSize:34 weight:UIFontWeightBold]];
+    name.text = @"LunaONE";
+    auto names = [[UIStackView alloc] initWithArrangedSubviews:@[name, _heading]];
+    names.axis = UILayoutConstraintAxisVertical;
+    names.spacing = 2;
+    auto header = [[UIStackView alloc] initWithArrangedSubviews:@[logo, names]];
+    header.alignment = UIStackViewAlignmentCenter;
+    header.spacing = 16;
+    auto tagline = Label(UIFontTextStyleBody, Argb(kLoginMuted));
+    tagline.text = Localized(@"Tes jeux Amazon Luna, sans navigateur, sur tous tes écrans.");
+
+    _formCard = LoginCard(@[_status, _spinner, _marketButton, _connect, _cancelButton]);
+    _status.textAlignment = NSTextAlignmentNatural;
+
+    // The QR on a white plate, which phone cameras read best.
+    auto plate = [UIView new];
+    plate.backgroundColor = UIColor.whiteColor;
+    plate.layer.cornerRadius = 14;
+    _qr.translatesAutoresizingMaskIntoConstraints = NO;
+    [plate addSubview:_qr];
+    [NSLayoutConstraint activateConstraints:@[
+        [_qr.widthAnchor constraintEqualToConstant:156],
+        [_qr.heightAnchor constraintEqualToConstant:156],
+        [_qr.topAnchor constraintEqualToAnchor:plate.topAnchor constant:12],
+        [_qr.bottomAnchor constraintEqualToAnchor:plate.bottomAnchor constant:-12],
+        [_qr.leadingAnchor constraintEqualToAnchor:plate.leadingAnchor constant:12],
+        [_qr.trailingAnchor constraintEqualToAnchor:plate.trailingAnchor constant:-12],
+    ]];
+    auto plateRow = [[UIStackView alloc] initWithArrangedSubviews:@[plate]];
+    plateRow.axis = UILayoutConstraintAxisVertical;
+    plateRow.alignment = UIStackViewAlignmentCenter;
+    auto codeHeading = Label(UIFontTextStyleHeadline, Argb(kLoginInk));
+    codeHeading.text = Localized(@"Scanne le QR code et saisis le code Amazon.");
+    codeHeading.textAlignment = NSTextAlignmentCenter;
+    _codeCard = LoginCard(@[codeHeading, plateRow, _address, _code, _verify, _copy]);
+
+    auto stepsHeading = Label(UIFontTextStyleTitle3, Argb(kLoginInk));
+    stepsHeading.font = [UIFontMetrics.defaultMetrics scaledFontForFont:[UIFont systemFontOfSize:20 weight:UIFontWeightBold]];
+    stepsHeading.text = Localized(@"Comment se connecter");
+    NSMutableArray<UIView*>* steps = [NSMutableArray arrayWithObject:stepsHeading];
+    NSArray<NSString*>* lines = @[@"Choisis le pays de ton compte Amazon, puis crée un code.",
+                                  @"Scanne le QR code avec ton téléphone ou ouvre la page Amazon.",
+                                  @"Saisis le code et confirme : ta bibliothèque Luna s’ouvre ici."];
+    for (NSUInteger i = 0; i < lines.count; ++i)
+    {
+        auto badge = Label(UIFontTextStyleHeadline, Argb(kLoginInk));
+        badge.text = [NSString stringWithFormat:@"%lu", (unsigned long)(i + 1)];
+        badge.textAlignment = NSTextAlignmentCenter;
+        badge.backgroundColor = Argb(kLoginButton);
+        badge.layer.cornerRadius = 17;
+        badge.clipsToBounds = YES;
+        [badge.widthAnchor constraintEqualToConstant:34].active = YES;
+        [badge.heightAnchor constraintEqualToConstant:34].active = YES;
+        auto line = Label(UIFontTextStyleBody, Argb(kLoginMuted));
+        line.text = Localized(lines[i]);
+        auto row = [[UIStackView alloc] initWithArrangedSubviews:@[badge, line]];
+        row.alignment = UIStackViewAlignmentCenter;
+        row.spacing = 14;
+        [steps addObject:row];
+    }
+    auto note = Label(UIFontTextStyleSubheadline, Argb(kLoginViolet));
+    note.text = Localized(@"Aucun mot de passe n’est saisi dans LunaONE.");
+    [steps addObject:note];
+    _stepsCard = LoginCard(steps);
+    _stepsCard.spacing = 16;
+
+    _cards = [[UIStackView alloc] initWithArrangedSubviews:@[_formCard, _codeCard, _stepsCard]];
+    _cards.spacing = 18;
+    _panel = [[UIStackView alloc] initWithArrangedSubviews:@[header, tagline, _cards]];
     _panel.axis = UILayoutConstraintAxisVertical;
-    _panel.spacing = 10;
-    _panel.layoutMarginsRelativeArrangement = YES;
-    _panel.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(26, 28, 26, 28);
-    _panel.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    _panel.layer.cornerRadius = 24;
+    _panel.spacing = 18;
+    [_panel setCustomSpacing:10 afterView:header];
     _panel.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:_panel];
+
+    // The page scrolls when it is taller than the screen (a phone on its side,
+    // a large text size), and is centred otherwise.
+    _loginBackdrop = [[LunaLoginBackdrop alloc] initWithFrame:self.view.bounds];
+    _loginBackdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:_loginBackdrop];
+    _loginScroll = [UIScrollView new];
+    _loginScroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    _loginScroll.alwaysBounceVertical = NO;
+    _loginScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    [_loginScroll addSubview:_panel];
+    [self.view addSubview:_loginScroll];
 
     auto safe = self.view.safeAreaLayoutGuide;
-    auto panelWidth = [_panel.widthAnchor constraintEqualToConstant:420];
-    panelWidth.priority = UILayoutPriorityDefaultHigh;
+    auto content = _loginScroll.contentLayoutGuide;
+    auto frame = _loginScroll.frameLayoutGuide;
+    _panelWidth = [_panel.widthAnchor constraintEqualToConstant:1040];
+    _panelWidth.priority = UILayoutPriorityDefaultHigh;
+    auto snug = [content.heightAnchor constraintEqualToAnchor:frame.heightAnchor];
+    snug.priority = UILayoutPriorityDefaultLow;
     [NSLayoutConstraint activateConstraints:@[
         [_grid.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [_grid.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -469,11 +668,18 @@ Catalog FetchCatalog(DeviceRegistration registration)
         [_libraryDetails.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
         [_libraryDetails.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
         [_libraryDetails.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-5],
-        [_panel.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
-        [_panel.centerYAnchor constraintEqualToAnchor:safe.centerYAnchor],
-        [_panel.leadingAnchor constraintGreaterThanOrEqualToAnchor:safe.leadingAnchor constant:20],
-        [_panel.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-20],
-        panelWidth,
+        [_loginScroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [_loginScroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+        [_loginScroll.topAnchor constraintEqualToAnchor:safe.topAnchor],
+        [_loginScroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [content.widthAnchor constraintEqualToAnchor:frame.widthAnchor],
+        [content.heightAnchor constraintGreaterThanOrEqualToAnchor:frame.heightAnchor],
+        snug,
+        [_panel.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [_panel.centerYAnchor constraintEqualToAnchor:content.centerYAnchor],
+        [_panel.leadingAnchor constraintGreaterThanOrEqualToAnchor:content.leadingAnchor constant:20],
+        [_panel.topAnchor constraintGreaterThanOrEqualToAnchor:content.topAnchor constant:16],
+        _panelWidth,
     ]];
 
     [self updateMarketMenu];
@@ -634,7 +840,12 @@ Catalog FetchCatalog(DeviceRegistration registration)
     _libraryHeader.hidden = _libraryDetails.hidden = _backdrop.hidden = _shade.hidden = !hasCatalog;
     _grid.hidden = !hasCatalog;
     _grid.userInteractionEnabled = !_busy;
-    _panel.hidden = hasCatalog;
+    _loginScroll.hidden = _loginBackdrop.hidden = hasCatalog;
+    // The page has its own header: no large "LunaONE" title above it.
+    self.navigationItem.title = hasCatalog ? @"LunaONE" : @"";
+    self.navigationItem.largeTitleDisplayMode = hasCatalog ? UINavigationItemLargeTitleDisplayModeAutomatic
+                                                           : UINavigationItemLargeTitleDisplayModeNever;
+    [self setContentScrollView:hasCatalog ? _grid : _loginScroll forEdge:NSDirectionalRectEdgeTop];
     _heading.text = Localized(heading);
     _status.text = Localized(detail);
     _status.hidden = detail.length == 0;
@@ -643,9 +854,15 @@ Catalog FetchCatalog(DeviceRegistration registration)
     auto configuration = _connect.configuration;
     configuration.title = Localized(_registered ? @"Réessayer" : @"Créer un code");
     _connect.configuration = configuration;
-    _code.hidden = _copy.hidden = _verify.hidden = _qr.hidden = !hasCode;
+    // Steps before a code, the code once Amazon gives one; nothing beside the
+    // form while a saved account loads.
+    const BOOL codeAppears = hasCode && _codeCard.hidden;
+    _codeCard.hidden = !hasCode;
+    _stepsCard.hidden = hasCode || _registered || _storageError || (_busy && !_cancel);
+    _panelWidth.constant = _codeCard.hidden && _stepsCard.hidden ? 520 : 1040;
     _qr.image = hasCode ? QRImage(_verifyURL) : nil;
     _code.text = _deviceCode;
+    _address.text = hasCode ? [NSString stringWithFormat:@"%@%@", _verifyURL.host ?: @"", _verifyURL.path ?: @""] : nil;
     _cancelButton.hidden = !_cancel;
     _cancelButton.enabled = _cancel && !_cancel->load();
     if (_busy && !hasCode)
@@ -654,6 +871,23 @@ Catalog FetchCatalog(DeviceRegistration registration)
         [_spinner stopAnimating];
     if (!_busy)
         [_refresh endRefreshing];
+    if (codeAppears && !hasCatalog)
+    {
+        // On a narrow screen the code sits under the form: bring it into view.
+        [self.view layoutIfNeeded];
+        [_loginScroll scrollRectToVisible:[_codeCard convertRect:_codeCard.bounds toView:_loginScroll] animated:YES];
+    }
+}
+
+// Side by side on an iPad or a phone on its side, stacked on a phone held upright.
+- (void)viewWillLayoutSubviews
+{
+    [super viewWillLayoutSubviews];
+    const auto insets = self.view.safeAreaInsets;
+    const BOOL wide = self.view.bounds.size.width - insets.left - insets.right >= 700;
+    _cards.axis = wide ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
+    _cards.alignment = wide ? UIStackViewAlignmentTop : UIStackViewAlignmentFill;
+    _cards.distribution = wide ? UIStackViewDistributionFillEqually : UIStackViewDistributionFill;
 }
 
 - (void)deliverCatalog:(std::shared_ptr<Catalog>)catalog registered:(BOOL)registered error:(NSString*)error

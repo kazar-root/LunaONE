@@ -20,6 +20,7 @@
 #include <opus.h>
 
 #include <algorithm>
+#include <sstream>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -440,6 +441,7 @@ void LunaStreamSession::Run()
     }
     catch (const std::exception& ex)
     {
+        LogRuntimeEvent("luna", "session_error", ex.what());
         std::lock_guard lock(mutex_);
         error_ = ex.what();
     }
@@ -520,6 +522,18 @@ void LunaStreamSession::Stream(Connection& connection)
         throw std::runtime_error("Luna declined the session: " + job.error);
 
     const auto answer = luna::NormalizeLunaAnswer(job.answer_sdp);
+    // The video line and codec names of the answer, without addresses or keys.
+    {
+        std::string video;
+        std::istringstream lines(answer);
+        for (std::string line; std::getline(lines, line);)
+        {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.starts_with("m=video ") || (line.starts_with("a=rtpmap:") && line.find("/90000") != std::string::npos))
+                video += (video.empty() ? "" : " | ") + line;
+        }
+        LogRuntimeEvent("luna", "video_answer", video.empty() ? std::string("none") : video);
+    }
     ValidateAnswer(answer, offered_fallback_);
     LogRuntimeEvent("luna", "video_codec", "payload=" + std::to_string(luna::AnsweredH264PayloadType(answer)) +
         " profile_level_id=" + AnsweredH264Profile(answer) + " fallback_offered=" + (offered_fallback_ ? "yes" : "no"));

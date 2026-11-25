@@ -39,9 +39,13 @@ using lunanx::ui::LibrarySection;
 constexpr std::uint32_t kBackground = 0xff100d1d, kText = 0xfffaf8ff, kSecondary = 0xffc7bdd4, kViolet = 0xffaa88ff,
                         kGreen = 0xff78e3bd, kInk = 0xff151125, kShell = 0xe818142b, kCard = 0xff2a2240,
                         kRank = 0xff6f42ea, kQuiet = 0x8dd8cce8, kRing = 0x867d718e, kPill = 0xfff0eaff;
-// MainActivity.java (sign-in screen) and TvUi.java colours.
-constexpr std::uint32_t kLoginBackground = 0xfff5f3fa, kLoginInk = 0xff211c34, kLoginMuted = 0xff625a78,
-                        kLoginAccent = 0xff4930b1, kFocus = 0xff5640bb, kPrimary = 0xff32217d;
+// The focus fill of the settings rows.
+constexpr std::uint32_t kFocus = 0xff5640bb;
+// The sign-in screen in the library's night colours: frosted cards on the
+// logo's violet, violet buttons with a white ring on focus.
+constexpr std::uint32_t kLoginCard = 0x1fffffff, kLoginCardEdge = 0x40aa88ff, kLoginButton = 0xff6a4cff,
+                        kLoginButtonFocus = 0xff8466ff, kLoginSecondary = 0x1affffff,
+                        kLoginSecondaryFocus = 0x55aa88ff, kLoginOutline = 0x4dffffff;
 constexpr std::size_t kPageSize = 10;
 const char* const kSections[] = {"Top 10", "Reprendre", "Tous les jeux", "Luna Premium"};
 
@@ -370,11 +374,6 @@ enum Action : int { kPlay = 0, kPrevious = 1, kNext = 2, kCancel = 3 };
     [CATransaction commit];
 }
 - (NSView*)hitTest:(NSPoint)point { return nil; }
-- (void)setLight:(BOOL)light
-{
-    self.layer.backgroundColor = Argb(light ? kLoginBackground : kBackground).CGColor;
-    self.shade.hidden = self.artwork.hidden = light;
-}
 // The previous picture stays until the next one has loaded, then cross-fades.
 - (void)show:(NSString*)address
 {
@@ -476,6 +475,8 @@ struct SettingsCategory
     NSString* _message;
     // Design canvas: LibraryScreen's 1280 × 720 points, scaled to the window.
     CGFloat _scale, _width, _offsetY;
+    // The sign-in screen centres its 1280-wide design; the library uses the full width.
+    CGFloat _offsetX;
     // Library focus.
     Zone _zone;
     int _topIndex, _actionIndex;
@@ -600,7 +601,7 @@ struct SettingsCategory
     if (_saved) [self connect];
     // Development aid: LUNAONE_SNAPSHOT=<file.png> writes the window to that
     // file every second, to check the layout without screen recording rights;
-    // LUNAONE_SNAPSHOT_PANEL=menu|settings|markets|keyboard opens that panel first.
+    // LUNAONE_SNAPSHOT_PANEL=menu|settings|markets|keyboard|code opens that panel first.
     if (NSProcessInfo.processInfo.environment[@"LUNAONE_SNAPSHOT"])
     {
         [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(snapshot) userInfo:nil repeats:YES];
@@ -624,6 +625,14 @@ struct SettingsCategory
                 }
             }
             else if ([panel isEqualToString:@"markets"]) [self showMarkets];
+            else if ([panel isEqualToString:@"code"])
+            {
+                // A made-up code, to check the code card without asking Amazon for one.
+                self->_code = @"LUNA42";
+                self->_codeAddress = @"https://www.amazon.fr/code";
+                self->_qr = QrImage("https://www.amazon.fr/code");
+                [self render];
+            }
         });
         if ([panel isEqualToString:@"fullscreen-cycle"])
             for (int step = 0; step < 4; ++step)
@@ -718,7 +727,8 @@ struct SettingsCategory
 
 - (NSRect)x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w h:(CGFloat)h
 {
-    return NSMakeRect(x * _scale, _offsetY + y * _scale, std::max<CGFloat>(0, w * _scale), std::max<CGFloat>(0, h * _scale));
+    return NSMakeRect(_offsetX + x * _scale, _offsetY + y * _scale, std::max<CGFloat>(0, w * _scale),
+                      std::max<CGFloat>(0, h * _scale));
 }
 
 - (NSRect)local:(CGFloat)x y:(CGFloat)y w:(CGFloat)w h:(CGFloat)h
@@ -821,6 +831,7 @@ struct SettingsCategory
     _scale = std::min(size.width / 1280, size.height / 720);
     _width = size.width / _scale;
     _offsetY = (size.height - 720 * _scale) / 2;
+    _offsetX = 0;
     [_content removeFromSuperview];
     _content = [[LunaFlippedView alloc] initWithFrame:_root.bounds];
     [_root addSubview:_content positioned:NSWindowAbove relativeTo:_backdrop];
@@ -831,7 +842,6 @@ struct SettingsCategory
     _system = _status = _hints = _title = _offer = _metadata = nil;
     _track = nil;
     _pulse.clear();
-    [_backdrop setLight:!_client && !_loading];
     if (_loading) [self renderLoading];
     else if (_client) [self renderLibrary];
     else [self renderLogin];
@@ -1307,62 +1317,141 @@ struct SettingsCategory
 
 #pragma mark - Sign-in screen
 
+// The sign-in screen's backdrop: the logo's violet deepening to the
+// library's night blue, with two soft glows.
+- (void)addLoginBackdrop
+{
+    NSView* backdrop = [[LunaFlippedView alloc] initWithFrame:_content.bounds];
+    backdrop.wantsLayer = YES;
+    CAGradientLayer* base = [CAGradientLayer layer];
+    base.frame = backdrop.bounds;
+    base.colors = @[(__bridge id)Argb(0xff3a1f9a).CGColor, (__bridge id)Argb(0xff1b1150).CGColor,
+                    (__bridge id)Argb(0xff0c0820).CGColor];
+    base.locations = @[@0, @.55, @1];
+    base.startPoint = CGPointMake(0, 0);
+    base.endPoint = CGPointMake(1, 1);
+    [backdrop.layer addSublayer:base];
+    const CGFloat aspect = backdrop.bounds.size.width / std::max<CGFloat>(1, backdrop.bounds.size.height);
+    const struct { CGPoint centre; CGFloat radius; std::uint32_t colour; } glows[] = {
+        {CGPointMake(.82, .18), .45, 0x707c4dff}, {CGPointMake(.08, .92), .4, 0x40b06bff}};
+    for (const auto& glow : glows)
+    {
+        CAGradientLayer* light = [CAGradientLayer layer];
+        light.type = kCAGradientLayerRadial;
+        light.frame = backdrop.bounds;
+        light.colors = @[(__bridge id)Argb(glow.colour).CGColor, (__bridge id)Argb(glow.colour & 0x00ffffff).CGColor];
+        light.startPoint = glow.centre;
+        light.endPoint = CGPointMake(glow.centre.x + glow.radius, glow.centre.y + glow.radius * aspect);
+        [backdrop.layer addSublayer:light];
+    }
+    [_content addSubview:backdrop];
+}
+
+// The form on the left and, on the right, the steps of the sign-in or the
+// code with its QR. The 1280 × 720 design scales to fit the window in both
+// directions and stays centred, so that it never leaves a TV's picture.
 - (void)renderLogin
 {
-    // MainActivity.showLogin on the TV: form on the left, code and QR on the right.
-    [self put:[self label:@"LunaONE" size:40 color:kLoginInk bold:YES] in:_content frame:[self x:88 y:46 w:600 h:56]];
-    [self put:[self label:Label("Connexion Amazon") size:20 color:kLoginMuted bold:NO] in:_content
-        frame:[self x:88 y:104 w:600 h:30]];
+    _offsetX = std::max<CGFloat>(0, (_root.bounds.size.width - 1280 * _scale) / 2);
+    [self addLoginBackdrop];
+
+    auto logo = [[LunaImageView alloc] initWithFrame:[self x:88 y:56 w:72 h:72]];
+    logo.image = NSApp.applicationIconImage;
+    logo.layer.cornerRadius = 16 * _scale;
+    [_content addSubview:logo];
+    [self put:[self label:@"LunaONE" size:40 color:kText bold:YES] in:_content frame:[self x:176 y:56 w:440 h:46]];
+    [self put:[self label:Label("Connexion Amazon") size:18 color:kViolet bold:NO] in:_content
+        frame:[self x:178 y:102 w:440 h:26]];
+    [self paragraph:Label("Tes jeux Amazon Luna, sans navigateur, sur tous tes écrans.") size:17 color:kSecondary
+               bold:NO in:_content frame:[self x:88 y:148 w:480 h:48] centred:NO];
+
+    // The form, on a frosted card.
     __weak LunaCatalog* weak = self;
-    CGFloat y = 160;
+    constexpr CGFloat kCardTop = 212, kFormX = 112, kFormWidth = 432;
+    const CGFloat cardHeight = _saved ? 22 + 3 * 56 + 2 * 12 + 22 : 22 + 34 + 3 * 56 + 2 * 12 + 22;
+    [self shape:kLoginCard radius:18 stroke:1 strokeColor:kLoginCardEdge frame:[self x:88 y:kCardTop w:480 h:cardHeight]
+             in:_content];
+    CGFloat y = kCardTop + 22;
     if (_saved)
     {
-        [self button:Label("Réessayer le chargement") primary:YES y:y action:^{ [weak connect]; }];
-        [self button:Label("Se déconnecter") primary:NO y:y += 68 action:^{ [weak confirmSignOut]; }];
+        [self button:Label("Réessayer le chargement") primary:YES y:y action:^{ [weak connect]; } x:kFormX w:kFormWidth];
+        [self button:Label("Se déconnecter") primary:NO y:y += 68 action:^{ [weak confirmSignOut]; } x:kFormX w:kFormWidth];
     }
     else
     {
-        [self put:[self label:Label("Pays du compte") size:18 color:kLoginMuted bold:NO] in:_content
-            frame:[self x:88 y:y w:480 h:28]];
+        [self put:[self label:Label("Pays du compte") size:16 color:kSecondary bold:NO] in:_content
+            frame:[self x:kFormX y:y w:kFormWidth h:26]];
+        y += 34;
         std::string market = _market;
         for (const auto& entry : AmazonMarkets())
             if (entry.code == _market) market = entry.native_name;
-        auto picker = [self button:[Text(market) stringByAppendingString:@"   ▾"] primary:NO y:y += 32
-                            action:^{ [weak showMarkets]; }];
-        static_cast<void>(picker);
-        [self button:Label("Créer un code") primary:YES y:y += 68 action:^{ [weak connect]; }];
+        [self button:[Text(market) stringByAppendingString:@"   ▾"] primary:NO y:y action:^{ [weak showMarkets]; }
+                   x:kFormX w:kFormWidth];
+        [self button:Label("Créer un code") primary:YES y:y += 68 action:^{ [weak connect]; } x:kFormX w:kFormWidth];
     }
-    [self button:Label("Réglages") primary:NO y:y += 68 action:^{ [weak showSettings:-1]; }];
+    [self button:Label("Réglages") primary:NO y:y += 68 action:^{ [weak showSettings:-1]; } x:kFormX w:kFormWidth];
 
+    // The right card.
+    auto panel = [self shape:kLoginCard radius:18 stroke:1 strokeColor:kLoginCardEdge frame:[self x:640 y:112 w:552 h:456]
+                          in:_content];
     if (_code)
     {
-        auto panel = [self shape:0xffffffff radius:14 stroke:0 strokeColor:0 frame:[self x:640 y:150 w:552 h:420] in:_content];
-        [self paragraph:Label("Scanne le QR code et saisis le code Amazon.") size:18 color:kLoginMuted bold:NO in:panel
-                  frame:[self local:26 y:24 w:500 h:50] centred:NO];
-        auto qr = [[LunaImageView alloc] initWithFrame:[self local:(552 - 180) / 2.0 y:80 w:180 h:180]];
+        [self paragraph:Label("Scanne le QR code et saisis le code Amazon.") size:18 color:kText bold:YES in:panel
+                  frame:[self local:28 y:24 w:496 h:50] centred:YES];
+        // The QR keeps a white plate: phone cameras read it best that way.
+        auto plate = [self shape:0xffffffff radius:16 stroke:0 strokeColor:0
+                           frame:[self local:(552 - 212) / 2.0 y:84 w:212 h:212] in:panel];
+        auto qr = [[LunaImageView alloc] initWithFrame:[self local:16 y:16 w:180 h:180]];
         qr.layer.contentsGravity = kCAGravityResizeAspect;
         qr.layer.magnificationFilter = kCAFilterNearest;
         qr.image = _qr;
-        [panel addSubview:qr];
-        [self put:[self label:_codeAddress size:21 color:kLoginAccent bold:NO] in:panel frame:[self local:26 y:272 w:500 h:34]];
-        auto code = [self label:_code size:50 color:kLoginInk bold:YES];
+        [plate addSubview:qr];
+        auto address = [self label:_codeAddress size:19 color:kViolet bold:NO];
+        address.alignment = NSTextAlignmentCenter;
+        [self put:address in:panel frame:[self local:28 y:314 w:496 h:30]];
+        auto code = [self label:_code size:50 color:kText bold:YES];
         code.font = [NSFont monospacedSystemFontOfSize:50 * _scale weight:NSFontWeightBold];
-        [self put:code in:panel frame:[self local:26 y:306 w:500 h:66]];
-        [self button:Label("Ouvrir la page Amazon") primary:NO y:582 action:^{ [weak openAmazon]; } x:640 w:552];
+        code.alignment = NSTextAlignmentCenter;
+        [self put:code in:panel frame:[self local:28 y:350 w:496 h:72]];
     }
-    _status = [self label:_message size:17 color:kLoginMuted bold:NO];
-    [self put:_status in:_content frame:[self x:88 y:y + 76 w:520 h:28]];
+    else
+    {
+        [self put:[self label:Label("Comment se connecter") size:22 color:kText bold:YES] in:panel
+            frame:[self local:32 y:28 w:488 h:32]];
+        const char* steps[] = {"Choisis le pays de ton compte Amazon, puis crée un code.",
+                               "Scanne le QR code avec ton téléphone ou ouvre la page Amazon.",
+                               "Saisis le code et confirme : ta bibliothèque Luna s’ouvre ici."};
+        for (int i = 0; i < 3; ++i)
+        {
+            const CGFloat top = 88 + i * 104;
+            auto badge = [self shape:kLoginButton radius:22 stroke:0 strokeColor:0 frame:[self local:32 y:top w:44 h:44]
+                                  in:panel];
+            auto number = [self label:[NSString stringWithFormat:@"%d", i + 1] size:20 color:kText bold:YES];
+            number.alignment = NSTextAlignmentCenter;
+            [self put:number in:badge frame:badge.bounds];
+            [self paragraph:Label(steps[i]) size:17 color:kSecondary bold:NO in:panel
+                      frame:[self local:96 y:top w:424 h:76] centred:NO];
+        }
+        [self paragraph:Label("Aucun mot de passe n’est saisi dans LunaONE.") size:15 color:kViolet bold:NO in:panel
+                  frame:[self local:32 y:404 w:488 h:30] centred:NO];
+    }
+
+    y = kCardTop + cardHeight;
+    _status = [self label:_message size:16 color:kSecondary bold:NO];
+    [self put:_status in:_content frame:[self x:88 y:y + 12 w:480 h:28]];
     // The cancel button is always the last focusable control.
-    auto cancel = [self button:Label("Annuler") primary:NO y:y + 112 action:^{ [weak cancelJob]; }];
+    auto cancel = [self button:Label("Annuler") primary:NO y:y + 48 action:^{ [weak cancelJob]; } x:88 w:480];
     cancel.hidden = !_busy;
-    _hints = [self label:@"" size:13 color:kLoginMuted bold:NO];
+    _hints = [self label:@"" size:13 color:kSecondary bold:NO];
     [self put:_hints in:_content frame:[self x:88 y:682 w:900 h:30]];
     if (_loginFocus >= _loginControls.size()) _loginFocus = 0;
     [self refreshBusy];
     [self refreshFocus];
+    // The settings and panels drawn next use the full width.
+    _offsetX = 0;
 }
 
-// TvUi.button: primary in deep violet, secondary in white, violet outline on focus.
+// Sign-in buttons: primary in violet, secondary frosted, a white or violet ring on focus.
 - (LunaControl*)button:(NSString*)title primary:(BOOL)primary y:(CGFloat)y action:(void (^)(void))action
 {
     return [self button:title primary:primary y:y action:action x:88 w:480];
@@ -1380,22 +1469,19 @@ struct SettingsCategory
         [catalog refreshFocus];
         action();
     }];
-    auto label = [self label:title size:19 color:primary ? 0xffffffff : kLoginInk bold:YES];
+    auto label = [self label:title size:19 color:kText bold:YES];
     label.alignment = NSTextAlignmentCenter;
     [self put:label in:button frame:button.bounds];
     __weak LunaControl* weakButton = button;
     button.decorate = ^(BOOL focused) {
-        [weak paint:weakButton color:primary ? (focused ? kFocus : kPrimary) : (focused ? 0xffe3dcff : 0xffffffff)
-             radius:8 stroke:focused ? 3 : (primary ? 0 : 1) strokeColor:focused ? (primary ? 0xffeeebff : kFocus) : 0x33211c34];
+        [weak paint:weakButton
+                 color:primary ? (focused ? kLoginButtonFocus : kLoginButton) : (focused ? kLoginSecondaryFocus : kLoginSecondary)
+                radius:12 stroke:focused ? 3 : (primary ? 0 : 1)
+           strokeColor:focused ? (primary ? 0xffffffff : kViolet) : kLoginOutline];
     };
     button.decorate(NO);
     _loginControls.push_back(button);
     return button;
-}
-
-- (void)openAmazon
-{
-    if (NSURL* url = [NSURL URLWithString:_codeAddress ?: @""]) [NSWorkspace.sharedWorkspace openURL:url];
 }
 
 - (void)showMarkets

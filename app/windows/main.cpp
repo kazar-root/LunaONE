@@ -533,6 +533,31 @@ class Desktop final : public lunanx::ui::SceneHost
             target_->FillRectangle(rect, gradient.Get());
             break;
         }
+        case Paint::Kind::Backdrop:
+        {
+            // The sign-in screen: the logo's violet deepening to night blue, with two glows.
+            const D2D1_GRADIENT_STOP stops[] = {{0, Color(0xff3a1f9a)}, {.55f, Color(0xff1b1150)}, {1, Color(0xff0c0820)}};
+            ComPtr<ID2D1GradientStopCollection> collection;
+            target_->CreateGradientStopCollection(stops, 3, collection.GetAddressOf());
+            ComPtr<ID2D1LinearGradientBrush> gradient;
+            target_->CreateLinearGradientBrush({{rect.left, rect.top}, {rect.right, rect.bottom}}, collection.Get(),
+                                               gradient.GetAddressOf());
+            target_->FillRectangle(rect, gradient.Get());
+            const struct { float x, y, radius; std::uint32_t color; } glows[] = {
+                {.82f, .18f, .45f, 0x707c4dff}, {.08f, .92f, .4f, 0x40b06bff}};
+            for (const auto& glow : glows)
+            {
+                const D2D1_GRADIENT_STOP light[] = {{0, Color(glow.color)}, {1, Color(glow.color & 0x00ffffff)}};
+                ComPtr<ID2D1GradientStopCollection> fade;
+                target_->CreateGradientStopCollection(light, 2, fade.GetAddressOf());
+                ComPtr<ID2D1RadialGradientBrush> radial;
+                const float radius = glow.radius * box.w;
+                target_->CreateRadialGradientBrush({{box.x + glow.x * box.w, box.y + glow.y * box.h}, {0, 0}, radius, radius},
+                                                   fade.Get(), radial.GetAddressOf());
+                target_->FillRectangle(rect, radial.Get());
+            }
+            break;
+        }
         }
     }
 

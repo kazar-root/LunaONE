@@ -473,6 +473,37 @@ class Desktop final : public lunanx::ui::SceneHost
                 cairo_pattern_destroy(gradient);
                 break;
             }
+            case Paint::Kind::Backdrop:
+            {
+                // The sign-in screen: the logo's violet deepening to night blue, with two glows.
+                const auto stop = [](cairo_pattern_t* pattern, double offset, std::uint32_t argb) {
+                    cairo_pattern_add_color_stop_rgba(pattern, offset, ((argb >> 16) & 255) / 255.0,
+                                                      ((argb >> 8) & 255) / 255.0, (argb & 255) / 255.0,
+                                                      (argb >> 24) / 255.0);
+                };
+                auto gradient = cairo_pattern_create_linear(box.x, box.y, box.x + box.w, box.y + box.h);
+                stop(gradient, 0, 0xff3a1f9a);
+                stop(gradient, .55, 0xff1b1150);
+                stop(gradient, 1, 0xff0c0820);
+                cairo_rectangle(cr, box.x, box.y, box.w, box.h);
+                cairo_set_source(cr, gradient);
+                cairo_fill(cr);
+                cairo_pattern_destroy(gradient);
+                const struct { double x, y, radius; std::uint32_t color; } glows[] = {
+                    {.82, .18, .45, 0x707c4dff}, {.08, .92, .4, 0x40b06bff}};
+                for (const auto& glow : glows)
+                {
+                    const double cx = box.x + glow.x * box.w, cy = box.y + glow.y * box.h, radius = glow.radius * box.w;
+                    auto light = cairo_pattern_create_radial(cx, cy, 0, cx, cy, radius);
+                    stop(light, 0, glow.color);
+                    stop(light, 1, glow.color & 0x00ffffff);
+                    cairo_rectangle(cr, box.x, box.y, box.w, box.h);
+                    cairo_set_source(cr, light);
+                    cairo_fill(cr);
+                    cairo_pattern_destroy(light);
+                }
+                break;
+            }
             }
         }
     }

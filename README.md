@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-7c4dff"></a>
-  <img alt="Version 0.2" src="https://img.shields.io/badge/version-0.2-aa88ff">
+  <img alt="Version 0.3" src="https://img.shields.io/badge/version-0.3-aa88ff">
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-5b3fd6">
 </p>
 
@@ -20,7 +20,7 @@
 
 ## Download
 
-Get **[LunaONE V0.2](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, FreeBSD, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
+Get **[LunaONE V0.3](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, FreeBSD, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
 
 ## What is LunaONE?
 
@@ -40,9 +40,14 @@ I hope LunaONE will please as many players as possible. Feedback, bug reports an
 </p>
 <p align="center"><sub>Left: FreeBSD, Indiana Jones and the Great Circle in 1080p at 60 FPS over a wired network. Right: Android Auto in a car, WRC Generations.</sub></p>
 
+<p align="center">
+  <img src="docs/images/sign-in-linux.jpg" width="80%" alt="The LunaONE sign-in screen: the account country and the three sign-in steps">
+</p>
+<p align="center"><sub>The sign-in screen, the same on every platform.</sub></p>
+
 ## Features
 
-- **Sign in without typing a password.** Scan the QR code, confirm the code on Amazon's official page, and you're in.
+- **Sign in without typing a password.** Scan the QR code, confirm the code on Amazon's official page, and you're in. The sign-in screen fits every screen, from a phone held upright to a TV that crops the edges of the picture.
 - **The whole Luna catalog.** Top 10, Recently Played, All Games and search, with large cover art. Games that are not in your plan are clearly marked.
 - **Smooth streaming up to 1080p at 60 FPS**, with a quality profile for every connection:
 
@@ -88,7 +93,7 @@ Yes, over USB or Bluetooth, with no extra software. 8BitDo controllers work in X
 
 ### Does Amazon Luna work on Android TV, Google TV or in a car?
 
-The LunaONE APK runs on Android 8+ phones and tablets, on Google TV with the TV remote, and on the Android screen of a car (see the [screenshots](#screenshots)).
+The LunaONE APK runs on Android 8+ phones and tablets, on Google TV with the TV remote, and on the Android screen of a car (see the [screenshots](#screenshots)). On a TV, the sign-in screen stays inside the picture, even on sets that crop its edges.
 
 ### How do I play Amazon Luna on iPhone or iPad without Safari?
 

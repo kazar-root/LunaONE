@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-7c4dff"></a>
-  <img alt="Version 0.3" src="https://img.shields.io/badge/version-0.3-aa88ff">
+  <img alt="Version 0.4" src="https://img.shields.io/badge/version-0.4-aa88ff">
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-5b3fd6">
 </p>
 
@@ -20,7 +20,7 @@
 
 ## Download
 
-Get **[LunaONE V0.3](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, FreeBSD, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
+Get **[LunaONE V0.4](https://github.com/kazar-root/LunaONE/releases/latest)** for macOS, Windows, Linux, FreeBSD, Android and Google TV, and iPhone and iPad. The release page explains how to install each version.
 
 ## What is LunaONE?
 
@@ -64,6 +64,7 @@ I hope LunaONE will please as many players as possible. Feedback, bug reports an
 - **Handy shortcuts.** L3 + R3 + R1 leaves a game. L1 + L2 + R1 + R2 opens the on-screen keyboard for search. L3 + R3 shows the technical overlay.
 - **Keyboard, mouse and TV remote** work in the library, before the game starts: browse the catalog, open the settings, or search for a game with the keyboard or the on-screen keyboard. In a game session, LunaONE currently sends only the controller to Luna. Keyboard and mouse support in game is in progress.
 - **Borderless full screen** on desktop (F11, Alt + Enter on Windows, Control + Command + F on Mac, or the title bar's maximize button, like the Mac's green button; Esc returns to the window).
+- **Updates in one click.** In **Settings › About**, select the version or **Check for updates**. On macOS, Windows, Linux and FreeBSD, LunaONE downloads the new version from GitHub, checks its SHA-256, installs it and restarts. On Android and Google TV it opens the system installer. On iPhone and iPad, install the new IPA with AltStore or Sideloadly.
 - **11 interface languages**: English, French, German, Spanish, Italian, Portuguese, Russian, Chinese, Polish, Dutch and Swedish.
 - **Private by design.** No LunaONE server and no telemetry (see [Privacy](#privacy)).
 
@@ -201,7 +202,7 @@ More details: [Windows, Linux and FreeBSD](docs/DESKTOP.md) · [Android and Goog
 ## Privacy
 
 - Your Amazon sign-in, cookies, settings, recently played games and logs stay in the app's private data folder on your device. Use **Sign out** in the settings to remove them.
-- LunaONE has no server of its own and sends no telemetry. It only talks to Amazon and Luna, to Luna's streaming servers, and to the GitHub API when you check for updates.
+- LunaONE has no server of its own and sends no telemetry. It only talks to Amazon and Luna, to Luna's streaming servers, and to GitHub when you check for or install updates.
 - The diagnostic log (`runtime.log`) never leaves your device. Please remove personal details before you attach it to an issue.
 
 ## Roadmap

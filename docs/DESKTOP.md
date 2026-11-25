@@ -16,11 +16,11 @@ ctest --preset linux
 ./build/linux/lunacore catalog --all
 ```
 
-The `LunaONE-V0.3-Linux-Alpine-arm64.tar.gz` archive targets Alpine 3.23 and uses musl. On Alpine, install `gtk+3.0 sdl2 ffmpeg-libs libcurl font-dejavu` before opening the app. Use the Linux preset to build against another distribution's libraries.
+The `LunaONE-V0.4-Linux-Alpine-arm64.tar.gz` archive targets Alpine 3.23 and uses musl. On Alpine, install `gtk+3.0 sdl2 ffmpeg-libs libcurl font-dejavu` before opening the app. Use the Linux preset to build against another distribution's libraries.
 
 ## FreeBSD
 
-The FreeBSD client uses GTK 3 for the catalog, the shared WebRTC engine, FFmpeg for H.264 video, and SDL2 for audio and controllers. The release offers `LunaONE-V0.3-FreeBSD-amd64.tar.gz` and `LunaONE-V0.3-FreeBSD-aarch64.tar.gz` for FreeBSD 14.4, 14.5, 15.0 and 15.1. You can validate the first Amazon sign-in by scanning the QR code with a phone. Browse the catalog and launch games from LunaONE in your FreeBSD graphical session.
+The FreeBSD client uses GTK 3 for the catalog, the shared WebRTC engine, FFmpeg for H.264 video, and SDL2 for audio and controllers. The release offers `LunaONE-V0.4-FreeBSD-amd64.tar.gz` and `LunaONE-V0.4-FreeBSD-aarch64.tar.gz` for FreeBSD 14.4, 14.5, 15.0 and 15.1. You can validate the first Amazon sign-in by scanning the QR code with a phone. Browse the catalog and launch games from LunaONE in your FreeBSD graphical session.
 
 Install the build and runtime dependencies with `pkg` as root.
 
@@ -49,7 +49,7 @@ The current archives were cross-built from a FreeBSD 14.4 sysroot with clang and
 
 ## Windows
 
-Extract `LunaONE-V0.3-Windows-x64.zip` for an Intel or AMD PC, or `LunaONE-V0.3-Windows-arm64.zip` for a Windows ARM PC. Keep the files in the extracted folder together and double-click `LunaONE.exe`, the only program in the archive. The command-line client `LunaONE-cli.exe` comes from a source build.
+Extract `LunaONE-V0.4-Windows-x64.zip` for an Intel or AMD PC, or `LunaONE-V0.4-Windows-arm64.zip` for a Windows ARM PC. Keep the files in the extracted folder together and double-click `LunaONE.exe`, the only program in the archive. The command-line client `LunaONE-cli.exe` comes from a source build.
 
 Choose the country for your Amazon account, create a code and scan the QR to open the Amazon confirmation page. Return to LunaONE after confirming. The window loads the catalog, searches Luna by title and can explore linked collections for more titles. Use **Se déconnecter** to remove the saved account from the PC.
 
@@ -92,6 +92,19 @@ Controllers connect over USB or Bluetooth. Windows, Linux and FreeBSD read them 
 **Profil de qualité** in Réglages › Général sets the H.264 profile, picture and sound together: Faible (Baseline, 720p 30 FPS), Moyen (Main, 720p 60 FPS), Élevé (High, 1080p 60 FPS), Ultra (High, 1080p 60 FPS, full-rate audio), Automatique (follows the screen) or Personnalisé (the rows of Réglages avancés). Luna's server has so far always answered with Constrained Baseline. Transport-wide arrival feedback stays on the Mac only: on the Google TV over Wi-Fi it raised losses and picture delay without raising the bitrate.
 
 Full screen is borderless and keeps the display mode. On Windows the taskbar goes below the window. As with the Mac's green button, the maximize button opens full screen rather than a maximized window. On Linux the game window is not modal, because GNOME does not let a modal window go full screen. The choice is saved and applies to the library and to games. Hints and settings name the buttons as printed on the controller in use: Xbox, PlayStation or Nintendo.
+
+## Updates
+
+In **Settings › About**, select **Check for updates** or the version line. When GitHub has a newer release, the panel offers **Install version V…**. LunaONE then:
+
+1. picks this computer's file in the latest release (`-macOS-universal.zip`, `-Windows-x64.zip`, `-Windows-arm64.zip`, `-Linux-Alpine-arm64.tar.gz`, `-FreeBSD-amd64.tar.gz` or `-FreeBSD-aarch64.tar.gz`), only from `github.com/kazar-root/LunaONE/releases/download/`;
+2. downloads it and checks its size and its SHA-256: the one GitHub computed when the file was uploaded, or else the release's `SHA256SUMS.txt`;
+3. unpacks it next to the installed copy, with `ditto` on macOS, `tar.exe` on Windows and `tar` on Linux and FreeBSD;
+4. replaces the installed files and quits, and the new version starts by itself.
+
+On macOS the app bundle moves aside and the new one takes its place; a helper waits for the old app to end, removes it and opens the new one. On Windows, a running program can be renamed but not overwritten: each file moves aside as `*.lunaone-old`, the new one is copied in, and the new version, started with `--after-update <pid>`, waits for the old one to end and deletes those files. Any failure puts the old files back. On Linux and FreeBSD each new file is copied beside the old one and renamed over it, then a helper starts the new version once the old one has ended.
+
+LunaONE needs write access to its folder (on macOS, to the app and to the folder that holds it). Otherwise, as for a copy run from a read-only disk, the panel only links to the GitHub releases. Linux builds made against glibc also link to GitHub, since the Linux release is built on Alpine (musl). Your sign-in and settings live in the data folder and stay as they are.
 
 ## LunaCore validation on 2026-11-19
 
@@ -139,3 +152,15 @@ The Linux media test verified reception and decoding. A desktop window, audio ou
 | FreeBSD | The amd64 and aarch64 archives were built from the FreeBSD 14.4 sysroot, and every dynamic symbol resolves. The only new symbol, `cairo_pattern_create_radial`, comes from the base Cairo library. |
 | Android | The V0.3 APK has version code 12 and the certificate of V0.1 and V0.2, so it installs over them. |
 | iPhone and iPad | The V0.3 IPA was built without the asset catalog, as for V0.2, and carries the same icons. |
+
+## LunaONE validation on 2026-11-25 (V0.4)
+
+| Check | Result |
+| --- | --- |
+| Updates on macOS | A test build labelled 0.2, run from a scratch folder, found V0.3 on GitHub, downloaded `LunaONE-V0.3-macOS-universal.zip`, matched GitHub's SHA-256, swapped the app bundle and quit. The helper removed the old bundle and opened V0.3, whose signature verified. |
+| Updates on Linux | The same test on Alpine ARM64 replaced every file of a V0.2 folder with V0.3, with modes 755 for the program and folders and 644 for the rest, then started V0.3, which stopped only because the VM has no display. |
+| macOS | The universal V0.4 app passed all 13 CTest suites. |
+| Linux | The Alpine ARM64 V0.4 build passed all 13 CTest suites. |
+| Windows | LLVM-MinGW built the x64 and ARM64 apps with the update code (`tar.exe` unpacking, `*.lunaone-old` files, `--after-update`). The archives hold the same files as before. The update itself still needs a run on a Windows PC. |
+| Android | The V0.4 APK has version code 13 and the certificate of the earlier versions. It declares `REQUEST_INSTALL_PACKAGES` and `UpdateProvider`, and its native library holds the update functions for both ABIs. The update itself still needs a run on a device. |
+| iPhone and iPad | The V0.4 IPA reports a new version and links to GitHub. |

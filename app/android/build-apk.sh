@@ -8,7 +8,7 @@ apk_dir=${1:-"$project_dir/build/android"}
 mkdir -p "$apk_dir"
 apk_dir=$(cd "$apk_dir" && pwd)
 native_dir=${LUNACORE_ANDROID_NATIVE_DIR:-"$apk_dir/native"}
-app_version=0.3
+app_version=0.4
 
 : "${ANDROID_HOME:?Set ANDROID_HOME to the Android SDK directory}"
 : "${JAVA_HOME:?Set JAVA_HOME to a JDK 17 directory}"
@@ -43,7 +43,7 @@ done
 mkdir -p "$package_dir/generated"
 "$build_tools/aapt2" compile --dir "$android_source/res" -o "$package_dir/resources.zip"
 "$build_tools/aapt2" link -I "$platform" --manifest "$android_source/AndroidManifest.xml" \
-    --min-sdk-version 26 --target-sdk-version 35 --version-code 12 --version-name "$app_version" --debug-mode \
+    --min-sdk-version 26 --target-sdk-version 35 --version-code 13 --version-name "$app_version" --debug-mode \
     --java "$package_dir/generated" -o "$package_dir/base.apk" "$package_dir/resources.zip"
 sources=("$android_source"/java/app/lunacore/android/*.java "$package_dir/generated/app/lunacore/android/R.java")
 "$JAVA_HOME/bin/javac" -encoding UTF-8 --release 17 -classpath "$platform" \

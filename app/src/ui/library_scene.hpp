@@ -6,6 +6,7 @@
 // screen with AppKit (app/apple/macos_catalog.mm).
 #pragma once
 
+#include "core/update_check.hpp"
 #include "input/controller_labels.hpp"
 #include "input/luna_input_encoder.hpp"
 #include "luna/luna_client.hpp"
@@ -223,6 +224,8 @@ class LibraryScene
     void ShowMarkets();
     void ConfirmSignOut();
     void CheckUpdates();
+    // Downloads and installs the update, then quits so that the new version starts.
+    void StartUpdate(UpdateInfo update);
 
     // Luna jobs on the worker thread.
     void Run(std::function<void()> job);

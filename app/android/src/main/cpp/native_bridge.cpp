@@ -13,6 +13,7 @@
 #include "ui/image_url_policy.hpp"
 #include "ui/library_sections.hpp"
 
+#include <fstream>
 #include <android/native_window_jni.h>
 
 #include <cstdlib>
@@ -580,14 +581,54 @@ extern "C" JNIEXPORT jstring JNICALL Java_app_lunacore_android_MainActivity_nati
     catch (const std::exception& error) { Throw(env, error); return nullptr; }
 }
 
+namespace
+{
+// The last check's result, which the install button downloads.
+std::mutex update_mutex;
+lunanx::UpdateInfo last_update;
+}
+
 extern "C" JNIEXPORT jstring JNICALL Java_app_lunacore_android_MainActivity_nativeCheckUpdates(
     JNIEnv* env, jclass, jstring installed)
 {
     try
     {
-        return Text(env, installed ? lunanx::CheckForUpdates(Utf8(env, installed)) : lunanx::CheckForUpdates());
+        auto update = installed ? lunanx::FindUpdate(Utf8(env, installed)) : lunanx::FindUpdate();
+        const auto message = update.message;
+        std::lock_guard lock(update_mutex);
+        last_update = std::move(update);
+        return Text(env, message);
     }
     catch (const std::exception& error) { Throw(env, error); return nullptr; }
+}
+
+// "V0.4" when the last check found an APK to install, otherwise empty.
+extern "C" JNIEXPORT jstring JNICALL Java_app_lunacore_android_MainActivity_nativeUpdateVersion(JNIEnv* env, jclass)
+{
+    std::lock_guard lock(update_mutex);
+    return Text(env, last_update.Downloadable() ? "V" + last_update.version : std::string());
+}
+
+// Downloads and checks the APK into `path`; returns an error message, or an
+// empty text once the file is ready.
+extern "C" JNIEXPORT jstring JNICALL Java_app_lunacore_android_MainActivity_nativeDownloadUpdate(
+    JNIEnv* env, jclass, jstring path)
+{
+    try
+    {
+        lunanx::UpdateInfo update;
+        {
+            std::lock_guard lock(update_mutex);
+            update = last_update;
+        }
+        const auto data = lunanx::DownloadUpdate(update);
+        std::ofstream file(Utf8(env, path), std::ios::binary | std::ios::trunc);
+        file.write(data.data(), static_cast<std::streamsize>(data.size()));
+        file.close();
+        if (!file) return Text(env, lunanx::Tr("Impossible de télécharger la mise à jour."));
+        return Text(env, std::string());
+    }
+    catch (const std::exception& error) { return Text(env, error.what()); }
 }
 
 extern "C" JNIEXPORT void JNICALL Java_app_lunacore_android_MainActivity_nativeInput(

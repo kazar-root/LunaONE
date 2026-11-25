@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(LunaONE VERSION 0.3 LANGUAGES C CXX)
+project(LunaONE VERSION 0.4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -122,6 +122,7 @@ add_library(lunaone_core STATIC
     app/src/core/app_paths.cpp
     app/src/core/playback_preferences.cpp
     app/src/core/update_check.cpp
+    app/src/core/self_update.cpp
     ${lunaone_http}
     app/src/core/i18n.cpp
     app/src/core/runtime_journal.cpp
@@ -336,7 +337,7 @@ if(LUNACORE_BUILD_IPADOS_APP)
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/app/ipados/Info.plist.in"
         MACOSX_BUNDLE_GUI_IDENTIFIER "${LUNACORE_IPADOS_BUNDLE_ID}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_BUNDLE_VERSION "11"
+        MACOSX_BUNDLE_BUNDLE_VERSION "12"
         XCODE_GENERATE_SCHEME ON
         XCODE_SCHEME_LAUNCH_CONFIGURATION RelWithDebInfo
         XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"

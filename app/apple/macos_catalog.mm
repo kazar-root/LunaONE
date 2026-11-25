@@ -15,6 +15,7 @@
 #include "core/runtime_journal.hpp"
 #include "core/playback_preferences.hpp"
 #include "core/update_check.hpp"
+#include "core/self_update.hpp"
 #include "luna/amazon_auth.hpp"
 #include "ui/device_qr.hpp"
 #include "ui/image_url_policy.hpp"
@@ -1791,11 +1792,49 @@ struct SettingsCategory
     [self openPanel:Label("Vérifier les mises à jour") rows:@[Note(Label("Vérification des mises à jour…"), 3)]
                back:^{ [self closePanel]; }];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSString* result = Text(lunanx::CheckForUpdates());
+        const lunanx::UpdateInfo update = lunanx::FindUpdate();
+        const BOOL installable = lunanx::CanInstallUpdate(update);
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_checkingUpdates = NO;
-            [self openPanel:Label("Vérifier les mises à jour") rows:@[
-                Note(result, 3),
+            NSMutableArray* rows = [NSMutableArray arrayWithObject:Note(Text(update.message), 3)];
+            if (installable)
+                [rows addObject:Button(Text(lunanx::TrFormat("Installer la version {}", {"V" + update.version})), ^{
+                    [self installUpdate:update];
+                })];
+            else if (update.available)
+                [rows addObject:Note(Label("Télécharge la nouvelle version sur GitHub."), 3)];
+            [rows addObject:Button(Label("Versions GitHub"), ^{
+                [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:Text(lunanx::ReleasesUrl)]];
+            })];
+            [rows addObject:Button(@"OK", ^{ [self closePanel]; })];
+            [self openPanel:Label("Vérifier les mises à jour") rows:rows back:^{ [self closePanel]; }];
+        });
+    });
+}
+
+// Downloads and installs the update, then quits: the new version opens once
+// this one has ended.
+- (void)installUpdate:(const lunanx::UpdateInfo&)update
+{
+    if (_checkingUpdates) return;
+    _checkingUpdates = YES;
+    [self openPanel:Label("Mise à jour de LunaONE") rows:@[
+        Note(Label("Téléchargement de la mise à jour…"), 3),
+        Note(Label("LunaONE redémarre tout seul une fois la mise à jour installée."), 3)] back:^{}];
+    const lunanx::UpdateInfo copy = update;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString* error = nil;
+        try { lunanx::InstallUpdate(copy); }
+        catch (const std::exception& failure) { error = Text(failure.what()); }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_checkingUpdates = NO;
+            if (!error)
+            {
+                [NSApp terminate:nil];
+                return;
+            }
+            [self openPanel:Label("Mise à jour impossible") rows:@[
+                Note(error, 3),
                 Button(Label("Versions GitHub"), ^{
                     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:Text(lunanx::ReleasesUrl)]];
                 }),
@@ -1952,8 +1991,13 @@ struct SettingsCategory
     updates.title = Label("Vérifier les mises à jour");
     updates.action = ^{ [self checkUpdates]; };
     about.rows.push_back(updates);
-    for (const auto& line : {"LunaONE  " + lunanx::VersionLabel(), lunanx::Tr("Crédit") + "  " + lunanx::ProjectCredit,
-                             lunanx::Tr(lunanx::Disclaimer)})
+    // The version itself checks for updates too.
+    SettingsEntry version;
+    version.kind = 2;
+    version.title = Text("LunaONE  " + lunanx::VersionLabel());
+    version.action = ^{ [self checkUpdates]; };
+    about.rows.push_back(version);
+    for (const auto& line : {lunanx::Tr("Crédit") + "  " + lunanx::ProjectCredit, lunanx::Tr(lunanx::Disclaimer)})
     {
         SettingsEntry entry;
         entry.kind = 3;

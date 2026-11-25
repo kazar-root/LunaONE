@@ -4,6 +4,7 @@
 #include "core/i18n.hpp"
 #include "core/playback_preferences.hpp"
 #include "core/update_check.hpp"
+#include "core/self_update.hpp"
 #include "luna/amazon_auth.hpp"
 #include "stream/launch_status.hpp"
 #include "ui/device_qr.hpp"
@@ -1337,7 +1338,8 @@ std::vector<LibraryScene::SettingsCategory> LibraryScene::SettingsCategories()
     }
     SettingsCategory about {Tr("À propos"), "info", {}};
     about.rows.push_back({Tr("Vérifier les mises à jour"), {}, 2, -1, false, [this] { CheckUpdates(); }});
-    about.rows.push_back({"LunaONE  " + VersionLabel(), {}, 3});
+    // The version itself checks for updates too.
+    about.rows.push_back({"LunaONE  " + VersionLabel(), {}, 2, -1, false, [this] { CheckUpdates(); }});
     about.rows.push_back({Tr("Crédit") + "  " + ProjectCredit, {}, 3});
     about.rows.push_back({Tr(Disclaimer), {}, 3});
     categories.push_back(std::move(about));
@@ -1670,12 +1672,48 @@ void LibraryScene::CheckUpdates()
     checking_updates_ = true;
     OpenPanel(Tr("Vérifier les mises à jour"), {{3, Tr("Vérification des mises à jour…")}}, [this] { ClosePanel(); });
     std::thread([this, alive = alive_] {
-        auto result = CheckForUpdates();
-        host_.Post([this, alive, result] {
+        auto update = FindUpdate();
+        const bool installable = CanInstallUpdate(update);
+        host_.Post([this, alive, update = std::move(update), installable] {
             if (!alive->load()) return;
             checking_updates_ = false;
-            OpenPanel(Tr("Vérifier les mises à jour"),
-                      {{3, result},
+            std::vector<Row> rows {{3, update.message}};
+            if (installable)
+                rows.push_back({4, TrFormat("Installer la version {}", {"V" + update.version}), {}, false,
+                                [this, update] { StartUpdate(update); }});
+            else if (update.available)
+                rows.push_back({3, Tr("Télécharge la nouvelle version sur GitHub.")});
+            rows.push_back({4, Tr("Versions GitHub"), {}, false, [this] { host_.OpenUrl(ReleasesUrl); }});
+            rows.push_back({4, "OK", {}, false, [this] { ClosePanel(); }});
+            OpenPanel(Tr("Vérifier les mises à jour"), std::move(rows), [this] { ClosePanel(); });
+        });
+    }).detach();
+}
+
+void LibraryScene::StartUpdate(UpdateInfo update)
+{
+    if (checking_updates_) return;
+    checking_updates_ = true;
+    // No way back while files are being replaced.
+    OpenPanel(Tr("Mise à jour de LunaONE"),
+              {{3, Tr("Téléchargement de la mise à jour…")},
+               {3, Tr("LunaONE redémarre tout seul une fois la mise à jour installée.")}},
+              [] {});
+    std::thread([this, alive = alive_, update = std::move(update)] {
+        std::string error;
+        try { InstallUpdate(update); }
+        catch (const std::exception& failure) { error = failure.what(); }
+        host_.Post([this, alive, error] {
+            if (!alive->load()) return;
+            checking_updates_ = false;
+            if (error.empty())
+            {
+                // The new version starts once this one has ended.
+                host_.Quit();
+                return;
+            }
+            OpenPanel(Tr("Mise à jour impossible"),
+                      {{3, error},
                        {4, Tr("Versions GitHub"), {}, false, [this] { host_.OpenUrl(ReleasesUrl); }},
                        {4, "OK", {}, false, [this] { ClosePanel(); }}},
                       [this] { ClosePanel(); });

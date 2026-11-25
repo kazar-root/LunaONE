@@ -783,7 +783,11 @@ Catalog FetchCatalog(DeviceRegistration registration)
     [progress addAction:[UIAlertAction actionWithTitle:Localized(@"Annuler") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:progress animated:YES completion:nil];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        auto result = Text(lunanx::CheckForUpdates());
+        // An iPhone or iPad app must be signed again to install: the new
+        // version comes from GitHub through AltStore or Sideloadly.
+        const auto update = lunanx::FindUpdate();
+        auto result = Text(update.available ? update.message + "\n" + lunanx::Tr("Télécharge la nouvelle version sur GitHub.")
+                                            : update.message);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.presentedViewController != progress || progress.isBeingDismissed) return;
             [progress dismissViewControllerAnimated:YES completion:^{

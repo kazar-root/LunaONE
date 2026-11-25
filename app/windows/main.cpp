@@ -2,6 +2,7 @@
 // LunaONE for Windows: the shared Google TV library (ui/library_scene) drawn
 // with Direct2D and DirectWrite, driven by the mouse, the keyboard or a
 // controller read through SDL2. Playback is lunaone::windows::Play.
+#include "core/self_update.hpp"
 #include "../desktop/runtime.hpp"
 #include "../desktop/sdl_controllers.hpp"
 #include "fullscreen.hpp"
@@ -673,6 +674,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 {
     try
     {
+        // After an update: wait for the previous version to end and remove its files.
+        lunanx::CompletePendingUpdate();
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         const lunaone::desktop::AccountLock lock;
         const lunaone::desktop::CurlRuntime curl;

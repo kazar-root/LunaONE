@@ -121,7 +121,12 @@ final class SettingsScreen extends FrameLayout {
         }
         ArrayList<Entry> about = new ArrayList<>();
         about.add(new Entry(t("Vérifier les mises à jour"), "", 2, -1, false, actions::checkUpdates));
-        for (String line : source.about()) about.add(note(line));
+        String[] lines = source.about();
+        for (int i = 0; i < lines.length; i++) {
+            // The first line, the version, checks for updates too.
+            if (i == 0) about.add(new Entry(lines[i], "", 2, -1, false, actions::checkUpdates));
+            else about.add(note(lines[i]));
+        }
         result.add(new Category(t("À propos"), "info", about));
         return result;
     }

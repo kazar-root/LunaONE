@@ -46,6 +46,8 @@ Google TV 0.2 compiled for both ARM ABIs and uses the same signing certificate a
 
 The 0.3 APK (version code 12) compiled for both ARM ABIs with the redesigned sign-in screen, and keeps the certificate of 0.1 and 0.2, so it installs over them.
 
+The 0.4 APK (version code 13) adds in-app updates and keeps the same certificate.
+
 The APK installed through ADB on a physical Smart TV Pro running Android 14 with an `armeabi-v7a` userspace. The TV launcher resolved `TvLauncher`, the app cold-started, and the initial focus landed on **Créer un code**. Amazon accepted device registration, and the TV loaded Luna catalog pages.
 
 A first live session decoded 1,512 video frames and received 1,565 audio packets. Luna accepted the session termination. The second Sonic session decoded 16,586 frames, received 14,276 audio packets and recorded 932 changes in Xbox controller state. The user confirmed picture, sound, controller response and return to the catalog with the TV remote.
@@ -55,3 +57,7 @@ The user also confirmed a successful play test of Star Wars Racer on the Google 
 ## Sign-in screen on a TV
 
 On a TV, the sign-in screen is laid out on a 960 × 540 dp page that `FitFrame` scales to fit, centred, inside the TV's safe area: 5 % of each edge stays clear, as Android TV recommends for sets that crop their edges (overscan). The page keeps its proportions whatever the TV's resolution, density or font size, and no longer leaves the picture on the sides. It uses the Mac's dark violet design: the form on the left, the three sign-in steps on the right, replaced by the QR code and the Amazon code once one is created. On a phone, the same cards are stacked and the page scrolls when it is taller than the screen. The layout still needs a look on a physical TV.
+
+## Updates
+
+In **Settings › About**, select **Check for updates** or the version line. When GitHub has a newer release, the dialog offers **Install version V…**. LunaONE downloads the APK, checks its size and SHA-256 (GitHub's, or else the release's `SHA256SUMS.txt`), and opens Android's package installer on it through `UpdateProvider`, a read-only content provider for that one file. Android asks to confirm the update and, the first time, to allow LunaONE to install apps (`REQUEST_INSTALL_PACKAGES`). The APK is signed with the same key as before, so it installs over the old version and keeps the sign-in and settings; the installer's last screen opens the new version.

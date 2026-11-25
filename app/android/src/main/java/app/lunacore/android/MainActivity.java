@@ -87,6 +87,8 @@ public final class MainActivity extends Activity {
     private static native boolean nativeSimpleLibrary();
     private static native String nativePreferredMarket();
     private static native String nativeCheckUpdates(String installed);
+    private static native String nativeUpdateVersion();
+    private static native String nativeDownloadUpdate(String path);
     private static native void nativeSetDisplay(int height, int refresh);
     private static native boolean nativeVirtualKeyboard();
     private static native String[] nativeShortcutNotes(int vendor);
@@ -744,13 +746,74 @@ public final class MainActivity extends Activity {
                 result = t("Impossible de vérifier les mises à jour sur GitHub.");
             }
             String message = result;
+            String update = nativeUpdateVersion();
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed() || !progress.isShowing()) return;
                 progress.dismiss();
-                new AlertDialog.Builder(this).setTitle(t("Vérifier les mises à jour")).setMessage(message)
-                    .setPositiveButton("OK", null).show();
+                AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle(t("Vérifier les mises à jour"))
+                    .setMessage(message).setNegativeButton("OK", null);
+                if (!update.isEmpty())
+                    dialog.setPositiveButton(t("Installer la version {}").replace("{}", update), (shown, which) -> installUpdate());
+                dialog.show();
             });
         }, "lunaone-updates").start();
+    }
+
+    // Downloads the APK checked against the release's SHA-256 list, then opens
+    // Android's installer on it. Android asks to confirm, and to allow LunaONE
+    // to install apps the first time; its last screen offers to open LunaONE.
+    private void installUpdate() {
+        AlertDialog progress = new AlertDialog.Builder(this).setTitle(t("Mise à jour de LunaONE"))
+            .setMessage(t("Téléchargement de la mise à jour…") + "\n" + t("Android va te demander de confirmer la mise à jour."))
+            .setCancelable(false).show();
+        new Thread(() -> {
+            java.io.File apk = UpdateProvider.file(this);
+            java.io.File folder = apk.getParentFile();
+            String error;
+            if (folder == null || (!folder.isDirectory() && !folder.mkdirs())) {
+                error = t("Impossible de télécharger la mise à jour.");
+            } else {
+                java.io.File[] old = folder.listFiles();
+                if (old != null) for (java.io.File file : old) file.delete();
+                error = nativeDownloadUpdate(apk.getPath());
+            }
+            String failure = error;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                progress.dismiss();
+                if (failure.isEmpty() && openInstaller()) return;
+                new AlertDialog.Builder(this).setTitle(t("Mise à jour impossible"))
+                    .setMessage(failure.isEmpty() ? t("Télécharge la nouvelle version sur GitHub.") : failure)
+                    .setNegativeButton("OK", null)
+                    .setPositiveButton(t("Versions GitHub"), (shown, which) -> openReleases()).show();
+            });
+        }, "lunaone-update-download").start();
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean openInstaller() {
+        Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE).setDataAndType(UpdateProvider.uri(), UpdateProvider.TYPE)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(install);
+            return true;
+        } catch (ActivityNotFoundException missing) {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(UpdateProvider.uri(), UpdateProvider.TYPE)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK));
+                return true;
+            } catch (ActivityNotFoundException alsoMissing) {
+                return false;
+            }
+        }
+    }
+
+    private void openReleases() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/kazar-root/LunaONE/releases")));
+        } catch (ActivityNotFoundException ignored) {
+            // No browser, as on some TVs: the dialog already said where to look.
+        }
     }
 
     @SuppressWarnings("deprecation")

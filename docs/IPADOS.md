@@ -43,6 +43,10 @@ open build/ipados/LunaONE.xcodeproj
 
 Run the `LunaONE-iOS` scheme on the iPhone: the watch app installs with it on the paired watch. Its bundle ID is the iPhone app's followed by `.watchkitapp`. Open LunaONE on the watch, then start a game on the iPhone.
 
+## Updates
+
+**Check for updates** tells whether GitHub has a newer version. An iPhone or iPad app must be signed again for each device, so LunaONE cannot install it itself: download the new IPA from GitHub and install it with AltStore or Sideloadly.
+
 ## Test a game
 
 Select your Amazon market and create a code. Scan the QR code from another device or use the Amazon button on the same device, then enter the displayed code. The sign-in screen uses the Mac's dark violet design. On an iPad, or an iPhone on its side, the form and the steps (then the code) sit side by side; on an iPhone held upright they are stacked, and the page scrolls when it is taller than the screen. Select a title in the catalog to start the native stream. Pair a Bluetooth gamepad from iPad settings to control the game. Use the close button to return to the catalog. The Xcode console reports picture and input counts when playback ends.
